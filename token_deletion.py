@@ -16,8 +16,8 @@ class TokenizerChanger:
     def delete_tokens(self, unwanted_tokens: list[str] = None):
         self.unwanted_tokens = list(set(unwanted_tokens)) if unwanted_tokens else list(
             set(self.unwanted_tokens))
-        for word in tqdm(self.unwanted_tokens, desc="Deleting unwanted words"):
-            del self.model_state["vocab"][word]
+        for token in tqdm(self.unwanted_tokens, desc="Deleting unwanted words"):
+            del self.model_state["vocab"][token]
 
     def find_least_words(self, k_least: int):
         self.unwanted_tokens = []
@@ -27,10 +27,10 @@ class TokenizerChanger:
             self.unwanted_tokens.append(k)
 
     def find_tokens(self, unwanted_tokens: list[str]):
-        for word in self.model_state["vocab"]:
-            for unwanted_word in unwanted_tokens:
-                if unwanted_word in word:
-                    self.unwanted_tokens.append(word)
+        for token in self.model_state["vocab"]:
+            for unwanted_token in unwanted_tokens:
+                if unwanted_token in token:
+                    self.unwanted_tokens.append(token)
 
     def delete_merges(self, unwanted_tokens: list[str] = None):
         processed_merges = [(''.join(merge).replace(' ', ''), merge)
@@ -42,11 +42,66 @@ class TokenizerChanger:
             set(self.unwanted_tokens))
 
         for processed_merge, original_merge in tqdm(processed_merges, desc="Finding unwanted merges"):
-            if any(word in processed_merge for word in self.unwanted_tokens):
+            if any(token in processed_merge for token in self.unwanted_tokens):
                 unwanted_merges_set.add(original_merge)
 
         self.model_state["merges"] = [merge for merge in tqdm(
             self.model_state["merges"], desc="Deleting unwanted merges") if merge not in unwanted_merges_set]
+
+    def add_tokens(self, tokens: list[str]):
+        for token in tqdm(tokens, desc="Adding tokens"):
+            if token not in self.model_state["vocab"]:
+                self.model_state["vocab"][token] = len(
+                    self.model_state["vocab"])
+
+    def add_merges(self, merges: list[str]):
+        for merge in tqdm(merges, desc="Adding merges"):
+            self.model_state["merges"].append(merge)
+
+        self.model_state["merges"] = list(set(self.model_state["merges"]))
+
+    def delete_inappropriate_merges(self, vocab: list[str]):
+        processed_merges = [(''.join(merge).replace(' ', ''), merge)
+                            for merge in self.model_state["merges"]]
+
+        unwanted_merges_set = set()
+
+        for processed_merge, original_merge in tqdm(processed_merges, desc="Finding unwanted merges"):
+            if not any(token == processed_merge for token in vocab):
+                unwanted_merges_set.add(original_merge)
+
+        for original_merge in tqdm(self.model_state["merges"], desc="Finding unwanted merges"):
+            if not any(token == original_merge[0] for token in vocab):
+                unwanted_merges_set.add(original_merge)
+
+        for original_merge in tqdm(self.model_state["merges"], desc="Finding unwanted merges"):
+            if not any(token == original_merge[1] for token in vocab):
+                unwanted_merges_set.add(original_merge)
+
+        self.model_state["merges"] = [merge for merge in tqdm(
+            self.model_state["merges"], desc="Deleting unwanted merges") if merge not in unwanted_merges_set]
+
+    def get_overlapping_tokens(self, vocab: dict):
+        overlapping_tokens = []
+        for token in tqdm(vocab.keys(), desc="Finding overlapping tokens"):
+            if token in self.model_state["vocab"].keys():
+                overlapping_tokens.append(token)
+        return overlapping_tokens
+
+    def get_overlapping_megres(self, merges: list):
+        overlapping_merges = []
+
+        processed_merges_new_tokenizer = [(''.join(merge).replace(' ', ''), merge)
+                                          for merge in self.model_state["merges"]]
+
+        processed_merges_old_tokenizer = [(''.join(merge).replace(' ', ''), merge)
+                                          for merge in merges]
+
+        for merge in tqdm(processed_merges_new_tokenizer, desc="Finding overlapping merges"):
+            if any(merge in processed_merge for processed_merge in processed_merges_old_tokenizer):
+                overlapping_merges.append(merge)
+
+        return overlapping_merges
 
     def format_merges(self):
         for i in tqdm(range(len(self.model_state["merges"])), desc="Formating merges"):
@@ -72,69 +127,9 @@ class TokenizerChanger:
         self.delete_tokens()
         self.delete_merges()
 
-    def add_tokens(self, tokens: list[str]):
-        for token in tqdm(tokens, desc="Adding tokens"):
-            if token not in self.model_state["vocab"]:
-                self.model_state["vocab"][token] = len(
-                    self.model_state["vocab"])
-
-    def add_merges(self, merges: list[str]):
-        for merge in tqdm(merges, desc="Adding merges"):
-            self.model_state["merges"].append(merge)
-
-        self.model_state["merges"] = list(set(self.model_state["merges"]))
-
-    def delete_inappropriate_merges(self, new_vocab: list[str]):
-        processed_merges = [(''.join(merge).replace(' ', ''), merge)
-                            for merge in self.model_state["merges"]]
-
-        unwanted_merges_set = set()
-
-        for processed_merge, original_merge in tqdm(processed_merges, desc="Finding unwanted merges"):
-            if not any(word == processed_merge for word in new_vocab):
-                unwanted_merges_set.add(original_merge)
-
-        for original_merge in tqdm(self.model_state["merges"], desc="Finding unwanted merges"):
-            if not any(word == original_merge[0] for word in new_vocab):
-                unwanted_merges_set.add(original_merge)
-
-        for original_merge in tqdm(self.model_state["merges"], desc="Finding unwanted merges"):
-            if not any(word == original_merge[1] for word in new_vocab):
-                unwanted_merges_set.add(original_merge)
-
-        self.model_state["merges"] = [merge for merge in tqdm(
-            self.model_state["merges"], desc="Deleting unwanted merges") if merge not in unwanted_merges_set]
-
-    def get_overlapping_tokens(self, vocab: dict = None):
-        overlapping_tokens = []
-        for token in tqdm(vocab.keys(), desc="Finding overlapping tokens"):
-            if token in self.model_state["vocab"].keys():
-                overlapping_tokens.append(token)
-        return overlapping_tokens
-
-    def get_overlapping_megres(self, tokenizer: PreTrainedTokenizer):
-        overlapping_merges = []
-
-        old_tokenizer_state = json.loads(
-            tokenizer.backend_tokenizer.model.__getstate__())
-
-        processed_merges_new_tokenizer = [(''.join(merge).replace(' ', ''), merge)
-                                          for merge in self.model_state["merges"]]
-
-        processed_merges_old_tokenizer = [(''.join(merge).replace(' ', ''), merge)
-                                          for merge in old_tokenizer_state["merges"]]
-
-        for merge in tqdm(processed_merges_new_tokenizer, desc="Finding overlapping merges"):
-            if any(merge in processed_merge for processed_merge in processed_merges_old_tokenizer):
-                overlapping_merges.append(merge)
-
-        return overlapping_merges
-
-    def delete_overlaps(self, tokenizer: PreTrainedTokenizer, target_changes: int = 0):
-        overlaps = list(set(self.get_overlapping_tokens(tokenizer)))
+    def delete_overlaps(self, vocab: dict):
+        overlaps = list(set(self.get_overlapping_tokens(vocab)))
         self.delete_tokens(unwanted_tokens=overlaps)
-        self.find_least_words(len(self.model_state["vocab"]) - target_changes)
-        self.delete_tokens()
         self.delete_merges()
 
     def save_tokenizer(self, path: str = "updated_tokenizer"):
