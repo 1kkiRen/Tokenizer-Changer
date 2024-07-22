@@ -55,10 +55,10 @@ class TokenizerChanger:
                     self.model_state["vocab"])
 
     def add_merges(self, merges: list[str]):
-        for merge in tqdm(merges, desc="Adding merges"):
-            self.model_state["merges"].append(merge)
+        for merge in tqdm(self.model_state["merges"], desc="Adding merges"):
+            merges.append(merge)
 
-        self.model_state["merges"] = list(set(self.model_state["merges"]))
+        self.model_state["merges"] = list(set(merges))
 
     def delete_inappropriate_merges(self, vocab: list[str]):
         processed_merges = [(''.join(merge).replace(' ', ''), merge)
