@@ -67,15 +67,7 @@ class TokenizerChanger:
         unwanted_merges_set = set()
 
         for processed_merge, original_merge in tqdm(processed_merges, desc="Finding unwanted merges"):
-            if not any(token == processed_merge for token in vocab):
-                unwanted_merges_set.add(original_merge)
-
-        for original_merge in tqdm(self.model_state["merges"], desc="Finding unwanted merges"):
-            if not any(token == original_merge[0] for token in vocab):
-                unwanted_merges_set.add(original_merge)
-
-        for original_merge in tqdm(self.model_state["merges"], desc="Finding unwanted merges"):
-            if not any(token == original_merge[1] for token in vocab):
+            if not all(token in vocab for token in [processed_merge, original_merge[0], original_merge[1]]):
                 unwanted_merges_set.add(original_merge)
 
         self.model_state["merges"] = [merge for merge in tqdm(
