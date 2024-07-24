@@ -1,12 +1,12 @@
 import json
 from tqdm import tqdm
 from tokenizers import models
-from transformers import PreTrainedTokenizer
+from transformers import PreTrainedTokenizerFast
 
 
 class TokenizerChanger:
-    def __init__(self, tokenizer: PreTrainedTokenizer):
-        self.tokenizer: PreTrainedTokenizer = tokenizer
+    def __init__(self, tokenizer: PreTrainedTokenizerFast):
+        self.tokenizer: PreTrainedTokenizerFast = tokenizer
         self.unwanted_tokens = []
         self.none_types = []
         self.target_changes = 0
@@ -155,5 +155,5 @@ class TokenizerChanger:
 
         self.tokenizer.save_pretrained(path)
 
-    def updated_tokenizer(self) -> PreTrainedTokenizer:
+    def updated_tokenizer(self) -> PreTrainedTokenizerFast:
         return self.tokenizer

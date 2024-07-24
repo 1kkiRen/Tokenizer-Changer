@@ -4,7 +4,7 @@ Python script for manipulating the existing tokenizer.
 The solution was tested on Llama3-8B tokenizer.
 
 -----
-# Installation
+# Installation:
 
 Installation from PyPI:
 ```bash
@@ -16,7 +16,7 @@ pip install tokenizerchanger
 ```python
 changer = TokenizerChanger(tokenizer)
 ```
-Create the object of `TokenizerChanger` class that requires an existing tokenizer that will be changed, e.g. `PreTrainedTokenizerFast` class from 🤗 Tokenizers library.
+Create the object of `TokenizerChanger` class that requires an existing tokenizer that will be changed, e.g. `PreTrainedTokenizerFast` class from 🤗 `tokenizers` library.
 
 ## Deletion:
 ```python
