@@ -4,6 +4,13 @@ Python script for manipulating the existing tokenizer.
 The solution was tested on Llama3-8B tokenizer.
 
 -----
+# Installation
+
+Installation from PyPI:
+```bash
+pip install tokenizerchanger
+```
+
 # Usage:
 
 ```python
