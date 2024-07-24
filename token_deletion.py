@@ -19,12 +19,13 @@ class TokenizerChanger:
         for token in tqdm(self.unwanted_tokens, desc="Deleting unwanted words"):
             del self.model_state["vocab"][token]
 
-    def find_least_words(self, k_least: int):
+    def find_least_tokens(self, k_least: int, exclude: list[str] = []):
         self.unwanted_tokens = []
-        for k, v in tqdm(dict(reversed(list(self.model_state["vocab"].items()))).items(), desc="Finding unwanted words"):
+        for k, v in tqdm(dict(reversed(list(self.model_state["vocab"].items()))).items(), desc="Finding unwanted tokens"):
             if len(self.unwanted_tokens) >= k_least:
                 break
-            self.unwanted_tokens.append(k)
+            if k not in exclude:
+                self.unwanted_tokens.append(k)
 
     def find_tokens(self, unwanted_tokens: list[str]):
         for token in self.model_state["vocab"]:
@@ -48,11 +49,25 @@ class TokenizerChanger:
         self.model_state["merges"] = [merge for merge in tqdm(
             self.model_state["merges"], desc="Deleting unwanted merges") if merge not in unwanted_merges_set]
 
+    def find_token_id_gap(self):
+        reversed_vocab_values = list(
+            reversed(self.model_state['vocab'].values()))
+        last_gap = 0
+        for i in range(len(self.model_state['vocab']) - 1):
+            if reversed_vocab_values[i] - reversed_vocab_values[i + 1] > 1:
+                last_gap = reversed_vocab_values[i + 1]
+
+        return last_gap
+
     def add_tokens(self, tokens: list[str]):
+        i = 1
+        border_id = self.find_token_id_gap()
         for token in tqdm(tokens, desc="Adding tokens"):
             if token not in self.model_state["vocab"]:
-                self.model_state["vocab"][token] = len(
-                    self.model_state["vocab"])
+                while border_id + i in self.model_state['vocab'].values():
+                    i += 1
+                self.model_state["vocab"][token] = border_id + i
+                i += 1
 
     def add_merges(self, merges: list[str]):
         for merge in tqdm(self.model_state["merges"], desc="Adding merges"):
@@ -109,8 +124,8 @@ class TokenizerChanger:
         for k in self.none_types:
             del self.model_state[k]
 
-    def delete_k_least_frequent_tokens(self, k: int):
-        self.find_least_words(k)
+    def delete_k_least_frequent_tokens(self, k: int, exclude: list[str] = []):
+        self.find_least_tokens(k, exclude)
         self.delete_tokens()
         self.delete_merges()
 
