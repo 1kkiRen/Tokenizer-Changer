@@ -89,14 +89,17 @@ class TokenizerChanger:
         return last_gap
 
     def add_tokens(self, tokens: list[str]):
-        i = 1
         border_id = self.find_token_id_gap()
+        vocab_values_set = set(self.model_state['vocab'].values())
+        next_id = border_id + 1
+    
         for token in tqdm(tokens, desc="Adding tokens"):
             if token not in self.model_state["vocab"]:
-                while border_id + i in self.model_state['vocab'].values():
-                    i += 1
-                self.model_state["vocab"][token] = border_id + i
-                i += 1
+                while next_id in vocab_values_set:
+                    next_id += 1
+                self.model_state["vocab"][token] = next_id
+                vocab_values_set.add(next_id)
+                next_id += 1
 
     def add_merges(self, merges: list[str]):
         for merge in tqdm(self.model_state["merges"], desc="Adding merges"):
