@@ -1,4 +1,4 @@
-# Tokens-Deletion
+# Tokens-Changer
 Python script for manipulating the existing tokenizer.
 
 The solution was tested on Llama3-8B tokenizer.
