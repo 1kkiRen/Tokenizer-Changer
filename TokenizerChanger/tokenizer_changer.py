@@ -1,7 +1,9 @@
 import json
+import re
 from tqdm import tqdm
 from tokenizers import models
 from transformers import PreTrainedTokenizerFast
+from multiprocessing import Pool, cpu_count
 
 
 class TokenizerChanger:
@@ -33,8 +35,16 @@ class TokenizerChanger:
                 if unwanted_token in token:
                     self.unwanted_tokens.append(token)
 
+    def fill_unwanted_merges(self, batch: list[str]):
+        unwanted_merges = []
+        for processed_merge, original_merge in tqdm(batch, desc="Finding unwanted merges"):
+            if any(token in processed_merge for token in self.unwanted_tokens):
+                unwanted_merges.append(original_merge)
+        return unwanted_merges
+
     def delete_merges(self, unwanted_tokens: list[str] = None):
-        processed_merges = [(''.join(merge).replace(' ', ''), merge)
+        pattern = r"\s+"
+        processed_merges = [(re.sub(pattern, "", merge), merge)
                             for merge in self.model_state["merges"]]
 
         unwanted_merges_set = set()
@@ -42,12 +52,31 @@ class TokenizerChanger:
         self.unwanted_tokens = list(set(unwanted_tokens)) if unwanted_tokens else list(
             set(self.unwanted_tokens))
 
-        for processed_merge, original_merge in tqdm(processed_merges, desc="Finding unwanted merges"):
-            if any(token in processed_merge for token in self.unwanted_tokens):
-                unwanted_merges_set.add(original_merge)
+        try:
+            num_chunks = cpu_count()
+            chunk_size = len(processed_merges) // num_chunks
+            chunks = [processed_merges[i:i + chunk_size]
+                      for i in range(0, len(processed_merges), chunk_size)]
 
-        self.model_state["merges"] = [merge for merge in tqdm(
-            self.model_state["merges"], desc="Deleting unwanted merges") if merge not in unwanted_merges_set]
+            with Pool(num_chunks) as pool:
+                unwanted_merges = list(tqdm(pool.imap(
+                    self.fill_unwanted_merges, chunks), total=len(chunks), desc="Processing merges"))
+
+            unwanted_merges_set = set()
+            for unwanted_merge in tqdm(unwanted_merges, desc="Filling unwanted merges"):
+                unwanted_merges_set.update(unwanted_merge)
+
+            self.model_state["merges"] = [merge for merge in tqdm(
+                self.model_state["merges"], desc="Deleting unwanted merges") if merge not in unwanted_merges_set]
+        except Exception as e:
+            if e == ZeroDivisionError:
+                unwanted_merges_set = set()
+                for processed_merge, original_merge in tqdm(processed_merges, desc="Finding unwanted merges"):
+                    if any(token in processed_merge for token in self.unwanted_tokens):
+                        unwanted_merges_set.add(original_merge)
+
+                self.model_state["merges"] = [merge for merge in tqdm(
+                    self.model_state["merges"], desc="Deleting unwanted merges") if merge not in unwanted_merges_set]
 
     def find_token_id_gap(self):
         reversed_vocab_values = list(
