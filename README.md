@@ -1,4 +1,4 @@
-# Tokens-Changer
+# Tokenizer-Changer
 Python script for manipulating the existing tokenizer.
 
 The solution was tested on Llama3-8B tokenizer.
@@ -26,14 +26,9 @@ changer.delete_k_least_frequent_tokens(k=1000, exclude=list_of_tokens)
 Deletes k most frequent tokens. The `exclude` argument stands for tokens that will be ignored during the deletion of least frequent tokens.
 
 ```python
-changer.delete_unwanted_tokens(list_of_unwanted_tokens)
+changer.delete_tokens(list_of_unwanted_tokens, include_substrings)
 ```
-Deletes all tokens from `list_of_unwanted_tokens` from the tokenizer.
-
-```python
-changer.delete_tokens(list_of_unwanted_tokens)
-```
-Now, you can delete exactly the list of unwanted tokens, in contrast to the `delete_unwanted_tokens` function, which deletes all tokens from the list and tokens that contain unwanted tokens as a substring.
+Deletes the unwanted tokens from the tokenizer. If `include_substrings` is `True`, all token occurrences will be deleted even if they are in other tokens. Defaults to `True`.
 
 ```python
 changer.delete_overlaps(vocab)
