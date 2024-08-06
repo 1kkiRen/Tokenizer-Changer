@@ -16,7 +16,6 @@ class TokenizerChanger:
         self.tokenizer: PreTrainedTokenizerFast = tokenizer
         self.unwanted_tokens = []
         self.none_types = []
-        self.target_changes = 0
         self.model_state = json.loads(
             tokenizer.backend_tokenizer.model.__getstate__()) if tokenizer else {}
 
@@ -213,6 +212,7 @@ class TokenizerChanger:
         for token in tqdm(vocab.keys(), desc="Finding overlapping tokens"):
             if token in self.model_state["vocab"].keys():
                 overlapping_tokens.append(token)
+
         return overlapping_tokens
 
     def get_overlapping_megres(self, merges: list):
@@ -265,7 +265,10 @@ class TokenizerChanger:
             self.find_tokens(self.unwanted_tokens)
 
         for token in tqdm(list(set(self.unwanted_tokens)), desc="Deleting unwanted words"):
-            del self.model_state["vocab"][token]
+            try:
+                del self.model_state["vocab"][token]
+            except KeyError:
+                raise KeyError(f"Token {token} not found in the vocabulary")
 
         self.delete_merges()
 
@@ -284,12 +287,17 @@ class TokenizerChanger:
         """Deletes all None fields from the tokenizer"""
         self.__is_tokenizer()
 
+        self.none_types = []
+
         for k, v in self.model_state.items():
             if v == None:
                 self.none_types.append(k)
 
         for k in self.none_types:
-            del self.model_state[k]
+            try:
+                del self.model_state[k]
+            except KeyError:
+                raise KeyError(f"Key {k} not found in the model state")
 
     def delete_k_least_frequent_tokens(self, k: int, exclude: list[str] = []):
         """Deletes k most frequent tokens. The exclude argument stands for tokens that will be ignored during the deletion of least frequent tokens
@@ -307,6 +315,19 @@ class TokenizerChanger:
         Args:
             path (str, optional): save to path. Defaults to "updated_tokenizer".
         """
+
+        self.updated_tokenizer()
+
+        self.tokenizer.save_pretrained(path)
+
+    def updated_tokenizer(self):
+        """Returns the updated tokenizer
+
+        Returns:
+            PreTrainedTokenizerFast: the updated tokenizer
+        """
+        self.__is_tokenizer()
+
         self.format_merges()
         self._delete_none_types()
 
@@ -320,13 +341,4 @@ class TokenizerChanger:
         self.model_state = json.loads(
             self.tokenizer.backend_tokenizer.model.__getstate__())
 
-        self.tokenizer.save_pretrained(path)
-
-    def updated_tokenizer(self):
-        """Returns the updated tokenizer
-
-        Returns:
-            PreTrainedTokenizerFast: the updated tokenizer
-        """
-        self.__is_tokenizer()
         return self.tokenizer
