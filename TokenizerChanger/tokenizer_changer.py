@@ -1,5 +1,6 @@
 import re
 import json
+from sympy import true
 from tqdm import tqdm
 from tokenizers import Tokenizer
 from transformers import PreTrainedTokenizerFast
@@ -17,6 +18,7 @@ class TokenizerChanger:
         self.tokenizer: PreTrainedTokenizerFast = tokenizer
         self.unwanted_tokens = []
         self.none_types = []
+        self.adding_permission = False
         self.space_sign = space_sign
         self.state = json.loads(
             tokenizer.backend_tokenizer.__getstate__()) if tokenizer else {}
@@ -177,6 +179,37 @@ class TokenizerChanger:
                 vocab_values_set.add(next_id)
                 next_id += 1
 
+    def add_token_suggestion(self, token: str):
+        """Suggests to add the missing token to the tokenizer
+
+        Args:
+            token (str): the token to be added
+        """
+        self.__is_tokenizer()
+
+        if not self.adding_permission:
+            print(
+                f"Token \"{token}\" is not found in the vocabulary. Do you want to add it? ([y]es/[n]o/[a]ll)")
+
+            answer = input().lower()
+
+            while answer not in ['y', 'n', 'a']:
+                print("Please, enter the correct answer")
+                answer = input().lower()
+
+            if answer == 'y':
+                self.add_tokens([token])
+                return True
+            elif answer == 'a':
+                self.adding_permission = True
+                self.add_tokens([token])
+                return True
+            else:
+                return False
+
+        self.add_tokens([token])
+        return True
+
     def add_merges(self, merges: list[str]):
         """Adds the merges to the tokenizer
 
@@ -185,10 +218,23 @@ class TokenizerChanger:
         """
         self.__is_tokenizer()
 
-        for merge in tqdm(self.state["model"]["merges"], desc="Adding merges"):
-            merges.append(merge)
+        pattern = r"\s+"
 
-        self.state["model"]["merges"] = list(set(merges))
+        processed_merges = [(re.sub(pattern, "", merge), merge.split(), merge)
+                            for merge in merges]
+
+        for processed_merge, merge_comp, merge in tqdm(processed_merges, desc="Adding merges"):
+            if processed_merge not in self.state["model"]["vocab"]:
+                if not self.add_token_suggestion(processed_merge):
+                    continue
+            if merge_comp[0] not in self.state["model"]["vocab"]:
+                if not self.add_token_suggestion(merge_comp[0]):
+                    continue
+            if merge_comp[1] not in self.state["model"]["vocab"]:
+                if not self.add_token_suggestion(merge_comp[1]):
+                    continue
+
+            self.state["model"]["merges"].append(merge)
 
     def delete_inappropriate_merges(self, vocab: list[str]):
         """Deletes all merges from tokenizer which contradict the vocab variable
@@ -335,7 +381,7 @@ class TokenizerChanger:
 
     def _move_special_tokens(self):
         """Moves the special tokens to the end of the vocabulary"""
-        
+
         for i in tqdm(range(len(self.state["added_tokens"])), desc="Moving special tokens"):
             self.state["added_tokens"][i]["id"] += (
                 len(self.state["model"]["vocab"]) - self.initial_length)
