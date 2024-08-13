@@ -1,32 +1,44 @@
 import re
 import json
 from tqdm import tqdm
-from tokenizers import models
+from tokenizers import Tokenizer
 from transformers import PreTrainedTokenizerFast
 from multiprocessing import Pool, cpu_count
 
 
 class TokenizerChanger:
-    def __init__(self, tokenizer: PreTrainedTokenizerFast = None):
+    def __init__(self, tokenizer: PreTrainedTokenizerFast = None, space_sign: str = "Ġ"):
         """Base class for changing tokenizers
 
         Args:
             tokenizer (PreTrainedTokenizerFast, optional): the tokenizer that will be changed. Defaults to None.
+            space_sign (str, optional): the space sign. Defaults to "Ġ".
         """
         self.tokenizer: PreTrainedTokenizerFast = tokenizer
         self.unwanted_tokens = []
         self.none_types = []
-        self.model_state = json.loads(
-            tokenizer.backend_tokenizer.model.__getstate__()) if tokenizer else {}
+        self.space_sign = space_sign
+        self.state = json.loads(
+            tokenizer.backend_tokenizer.__getstate__()) if tokenizer else {}
+        self.initial_length = len(
+            self.state["model"]["vocab"]) if self.state else 0
 
     def __is_tokenizer(self):
-        """The tokenizer existance checker
+        """The tokenizer existence checker
 
         Raises:
             ValueError: Tokenizer is not loaded
         """
-        if not self.tokenizer or not self.model_state:
+        if not self.tokenizer or not self.state:
             raise ValueError("Tokenizer is not loaded")
+
+    def set_space_sign(self, space_sign: str):
+        """The space sign setter
+
+        Args:
+            space_sign (str): the space sign
+        """
+        self.space_sign = space_sign
 
     def load_tokenizer(self, tokenizer: PreTrainedTokenizerFast):
         """The tokenizer loader function
@@ -35,8 +47,8 @@ class TokenizerChanger:
             tokenizer (PreTrainedTokenizerFast): the tokenizer to be loaded
         """
         self.tokenizer = tokenizer
-        self.model_state = json.loads(
-            tokenizer.backend_tokenizer.model.__getstate__())
+        self.state = json.loads(tokenizer.backend_tokenizer.__getstate__())
+        self.initial_length = len(self.state["model"]["vocab"])
 
     def find_least_tokens(self, k_least: int, exclude: list[str] = []):
         """Finds the k least frequent tokens
@@ -48,7 +60,7 @@ class TokenizerChanger:
         self.__is_tokenizer()
 
         self.unwanted_tokens = []
-        for k, v in tqdm(dict(reversed(list(self.model_state["vocab"].items()))).items(), desc="Finding unwanted tokens"):
+        for k, v in tqdm(dict(reversed(list(self.state["model"]["vocab"].items()))).items(), desc="Finding unwanted tokens"):
             if len(self.unwanted_tokens) >= k_least:
                 break
             if k not in exclude:
@@ -65,7 +77,7 @@ class TokenizerChanger:
         unwanted_tokens = list(set(unwanted_tokens))
 
         for token in tqdm(unwanted_tokens, desc="Finding unwanted tokens"):
-            if token in self.model_state["vocab"].keys():
+            if token in self.state["model"]["vocab"].keys():
                 self.unwanted_tokens.append(token)
 
     def _fill_unwanted_merges(self, batch: list[str]):
@@ -94,7 +106,7 @@ class TokenizerChanger:
 
         pattern = r"\s+"
         processed_merges = [(re.sub(pattern, "", merge), merge)
-                            for merge in self.model_state["merges"]]
+                            for merge in self.state["model"]["merges"]]
 
         unwanted_merges_set = set()
 
@@ -115,8 +127,8 @@ class TokenizerChanger:
             for unwanted_merge in tqdm(unwanted_merges, desc="Filling unwanted merges"):
                 unwanted_merges_set.update(unwanted_merge)
 
-            self.model_state["merges"] = [merge for merge in tqdm(
-                self.model_state["merges"], desc="Deleting unwanted merges") if merge not in unwanted_merges_set]
+            self.state["model"]["merges"] = [merge for merge in tqdm(
+                self.state["model"]["merges"], desc="Deleting unwanted merges") if merge not in unwanted_merges_set]
         except Exception as e:
             if e == ZeroDivisionError:
                 unwanted_merges_set = set()
@@ -124,8 +136,8 @@ class TokenizerChanger:
                     if any(token in processed_merge for token in self.unwanted_tokens):
                         unwanted_merges_set.add(original_merge)
 
-                self.model_state["merges"] = [merge for merge in tqdm(
-                    self.model_state["merges"], desc="Deleting unwanted merges") if merge not in unwanted_merges_set]
+                self.state["model"]["merges"] = [merge for merge in tqdm(
+                    self.state["model"]["merges"], desc="Deleting unwanted merges") if merge not in unwanted_merges_set]
 
     def find_token_id_gap(self):
         """Finds the token id of the gap
@@ -136,9 +148,9 @@ class TokenizerChanger:
         self.__is_tokenizer()
 
         reversed_vocab_values = list(
-            reversed(self.model_state['vocab'].values()))
+            reversed(self.state["model"]['vocab'].values()))
         last_gap = 0
-        for i in range(len(self.model_state['vocab']) - 1):
+        for i in range(len(self.state["model"]['vocab']) - 1):
             if reversed_vocab_values[i] - reversed_vocab_values[i + 1] > 1:
                 last_gap = reversed_vocab_values[i + 1]
 
@@ -153,14 +165,15 @@ class TokenizerChanger:
         self.__is_tokenizer()
 
         border_id = self.find_token_id_gap()
-        vocab_values_set = set(self.model_state['vocab'].values())
+        vocab_values_set = set(self.state["model"]['vocab'].values())
         next_id = border_id + 1
 
         for token in tqdm(tokens, desc="Adding tokens"):
-            if token not in self.model_state["vocab"]:
+            token = token.replace(' ', self.space_sign)
+            if token not in self.state["model"]["vocab"]:
                 while next_id in vocab_values_set:
                     next_id += 1
-                self.model_state["vocab"][token] = next_id
+                self.state["model"]["vocab"][token] = next_id
                 vocab_values_set.add(next_id)
                 next_id += 1
 
@@ -172,10 +185,10 @@ class TokenizerChanger:
         """
         self.__is_tokenizer()
 
-        for merge in tqdm(self.model_state["merges"], desc="Adding merges"):
+        for merge in tqdm(self.state["model"]["merges"], desc="Adding merges"):
             merges.append(merge)
 
-        self.model_state["merges"] = list(set(merges))
+        self.state["model"]["merges"] = list(set(merges))
 
     def delete_inappropriate_merges(self, vocab: list[str]):
         """Deletes all merges from tokenizer which contradict the vocab variable
@@ -186,7 +199,7 @@ class TokenizerChanger:
         self.__is_tokenizer()
 
         processed_merges = [(''.join(merge).replace(' ', ''), merge)
-                            for merge in self.model_state["merges"]]
+                            for merge in self.state["model"]["merges"]]
 
         unwanted_merges_set = set()
 
@@ -194,8 +207,8 @@ class TokenizerChanger:
             if not all(token in vocab for token in [processed_merge, original_merge[0], original_merge[1]]):
                 unwanted_merges_set.add(original_merge)
 
-        self.model_state["merges"] = [merge for merge in tqdm(
-            self.model_state["merges"], desc="Deleting unwanted merges") if merge not in unwanted_merges_set]
+        self.state["model"]["merges"] = [merge for merge in tqdm(
+            self.state["model"]["merges"], desc="Deleting unwanted merges") if merge not in unwanted_merges_set]
 
     def get_overlapping_tokens(self, vocab: dict):
         """Returns the intersection between the tokenizer's vocabulary and the vocab variable
@@ -210,12 +223,12 @@ class TokenizerChanger:
 
         overlapping_tokens = []
         for token in tqdm(vocab.keys(), desc="Finding overlapping tokens"):
-            if token in self.model_state["vocab"].keys():
+            if token in self.state["model"]["vocab"].keys():
                 overlapping_tokens.append(token)
 
         return overlapping_tokens
 
-    def get_overlapping_megres(self, merges: list):
+    def get_overlapping_merges(self, merges: list):
         """Returns the intersection between the tokenizer's merges and the merges variable
 
         Args:
@@ -229,7 +242,7 @@ class TokenizerChanger:
         overlapping_merges = []
 
         processed_merges_new_tokenizer = [(''.join(merge).replace(' ', ''), merge)
-                                          for merge in self.model_state["merges"]]
+                                          for merge in self.state["model"]["merges"]]
 
         processed_merges_old_tokenizer = [(''.join(merge).replace(' ', ''), merge)
                                           for merge in merges]
@@ -244,17 +257,17 @@ class TokenizerChanger:
         """Formats the merges to the tuple format"""
         self.__is_tokenizer()
 
-        for i in tqdm(range(len(self.model_state["merges"])), desc="Formating merges"):
-            if type(self.model_state["merges"][i]) != tuple:
-                self.model_state["merges"][i] = tuple(
-                    map(str, self.model_state["merges"][i].split()))
+        for i in tqdm(range(len(self.state["model"]["merges"])), desc="Formatting merges"):
+            if type(self.state["model"]["merges"][i]) != tuple:
+                self.state["model"]["merges"][i] = tuple(
+                    map(str, self.state["model"]["merges"][i].split()))
 
     def delete_tokens(self, unwanted_tokens: list[str] = [], include_substrings: bool = True):
         """Deletes the unwanted tokens from the tokenizer
 
         Args:
             unwanted_tokens (list[str]): list of tokens to be deleted. If empty self.unwanted_tokens will be deleted. Defaults to [].
-            include_substrings (bool, optional): the flag of deletion the occurences of the tokens in other tokens. Defaults to True.
+            include_substrings (bool, optional): the flag of deletion the occurrences of the tokens in other tokens. Defaults to True.
         """
         self.__is_tokenizer()
 
@@ -266,7 +279,7 @@ class TokenizerChanger:
 
         for token in tqdm(list(set(self.unwanted_tokens)), desc="Deleting unwanted words"):
             try:
-                del self.model_state["vocab"][token]
+                del self.state["model"]["vocab"][token]
             except KeyError:
                 raise KeyError(f"Token {token} not found in the vocabulary")
 
@@ -289,13 +302,13 @@ class TokenizerChanger:
 
         self.none_types = []
 
-        for k, v in self.model_state.items():
+        for k, v in self.state["model"].items():
             if v == None:
                 self.none_types.append(k)
 
         for k in self.none_types:
             try:
-                del self.model_state[k]
+                del self.state["model"][k]
             except KeyError:
                 raise KeyError(f"Key {k} not found in the model state")
 
@@ -320,6 +333,20 @@ class TokenizerChanger:
 
         self.tokenizer.save_pretrained(path)
 
+    def _move_special_tokens(self):
+        """Moves the special tokens to the end of the vocabulary"""
+        
+        for i in tqdm(range(len(self.state["added_tokens"])), desc="Moving special tokens"):
+            self.state["added_tokens"][i]["id"] += (
+                len(self.state["model"]["vocab"]) - self.initial_length)
+
+        for i in range(len(self.state["post_processor"]["processors"])):
+            if 'special_tokens' in self.state["post_processor"]["processors"][i].keys():
+                for k in self.state["post_processor"]["processors"][i]["special_tokens"].keys():
+                    for j in tqdm(range(len(self.state["post_processor"]["processors"][i]["special_tokens"][k]['ids'])), desc="Moving special tokens"):
+                        self.state["post_processor"]["processors"][i]["special_tokens"][k]["ids"][j] += (
+                            len(self.state["model"]["vocab"]) - self.initial_length)
+
     def updated_tokenizer(self):
         """Returns the updated tokenizer
 
@@ -328,17 +355,15 @@ class TokenizerChanger:
         """
         self.__is_tokenizer()
 
-        self.format_merges()
-        self._delete_none_types()
+        if self.initial_length < len(self.state["model"]["vocab"]):
+            self._move_special_tokens()
 
-        model_class = getattr(
-            models, self.model_state.pop("type")
-        )
+        backend_tokenizer = Tokenizer.from_str(json.dumps(self.state))
 
-        self.tokenizer.backend_tokenizer.model = model_class(
-            **self.model_state)
+        self.tokenizer = PreTrainedTokenizerFast(
+            tokenizer_object=backend_tokenizer)
 
-        self.model_state = json.loads(
-            self.tokenizer.backend_tokenizer.model.__getstate__())
+        self.state = json.loads(
+            self.tokenizer.backend_tokenizer.__getstate__())
 
         return self.tokenizer
