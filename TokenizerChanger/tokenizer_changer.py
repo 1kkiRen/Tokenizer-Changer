@@ -1,6 +1,5 @@
 import re
 import json
-from sympy import true
 from tqdm import tqdm
 from tokenizers import Tokenizer
 from transformers import PreTrainedTokenizerFast
