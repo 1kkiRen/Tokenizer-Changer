@@ -14,7 +14,7 @@ Installation from PyPI:
 pip install tokenizerchanger
 ```
 
----
+-----
 
 # Usage
 
