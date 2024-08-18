@@ -18,6 +18,7 @@ class TokenizerChanger:
         self.unwanted_tokens = []
         self.none_types = []
         self.adding_permission = False
+        self.none_permission = False
         self.space_sign = space_sign
         self.state = json.loads(
             tokenizer.backend_tokenizer.__getstate__()) if tokenizer else {}
@@ -51,21 +52,27 @@ class TokenizerChanger:
         self.state = json.loads(tokenizer.backend_tokenizer.__getstate__())
         self.initial_length = len(self.state["model"]["vocab"])
 
-    def find_least_tokens(self, k_least: int, exclude: list[str] = []):
+    def find_least_tokens(self, k_least: int, exclude: list[str] = [], consider_excluded_tokens: bool = False):
         """Finds the k least frequent tokens
 
         Args:
             k_least (int): number of tokens to find
             exclude (list[str], optional): tokens that will be excluded from the search. Defaults to [].
+            consider_excluded_tokens (bool, optional): the flag of considering the excluded tokens in the final number of deletions. Defaults to False.
         """
         self.__is_tokenizer()
 
         self.unwanted_tokens = []
+
+        skipped_counter = 0
+
         for k, v in tqdm(dict(reversed(list(self.state["model"]["vocab"].items()))).items(), desc="Finding unwanted tokens"):
-            if len(self.unwanted_tokens) >= k_least:
+            if len(self.unwanted_tokens) >= k_least - skipped_counter:
                 break
             if k not in exclude:
                 self.unwanted_tokens.append(k)
+            elif consider_excluded_tokens:
+                skipped_counter += 1
 
     def find_tokens(self, unwanted_tokens: list[str]):
         """Finds the tokens and their occurrences
@@ -140,6 +147,8 @@ class TokenizerChanger:
                 self.state["model"]["merges"] = [merge for merge in tqdm(
                     self.state["model"]["merges"], desc="Deleting unwanted merges") if merge not in unwanted_merges_set]
 
+        self.unwanted_tokens = []
+
     def find_token_id_gap(self):
         """Finds the token id of the gap
 
@@ -178,35 +187,47 @@ class TokenizerChanger:
                 vocab_values_set.add(next_id)
                 next_id += 1
 
-    def add_token_suggestion(self, token: str):
+    def add_token_suggestion(self, merge: str):
         """Suggests to add the missing token to the tokenizer
 
         Args:
-            token (str): the token to be added
+            merge (str): the merge to be suggested to add
         """
         self.__is_tokenizer()
 
+        if self.none_permission:
+            return False
+
         if not self.adding_permission:
             print(
-                f"Token \"{token}\" is not found in the vocabulary. Do you want to add it? ([y]es/[n]o/[a]ll)")
+                f"Merge \"{merge}\" can not be added. Do you want to add its tokens? ([y]es/[n]o/[a]ll/[none])")
 
             answer = input().lower()
 
-            while answer not in ['y', 'n', 'a']:
+            while answer not in ['y', 'n', 'a', 'none']:
                 print("Please, enter the correct answer")
                 answer = input().lower()
 
             if answer == 'y':
-                self.add_tokens([token])
+                processed_merge = ''.join(merge).replace(' ', '')
+                split_merge = merge.split()
+                self.add_tokens([processed_merge] + split_merge)
                 return True
             elif answer == 'a':
                 self.adding_permission = True
-                self.add_tokens([token])
+                processed_merge = ''.join(merge).replace(' ', '')
+                split_merge = merge.split()
+                self.add_tokens([processed_merge] + split_merge)
                 return True
+            elif answer == 'n':
+                return False
             else:
+                self.none_permission = True
                 return False
 
-        self.add_tokens([token])
+        processed_merge = ''.join(merge).replace(' ', '')
+        split_merge = merge.split()
+        self.add_tokens([processed_merge] + split_merge)
         return True
 
     def add_merges(self, merges: list[str]):
@@ -217,23 +238,25 @@ class TokenizerChanger:
         """
         self.__is_tokenizer()
 
-        pattern = r"\s+"
+        pattern = re.compile(r"\s+")
 
-        processed_merges = [(re.sub(pattern, "", merge), merge.split(), merge)
+        processed_merges = [(pattern.sub("", merge), merge.split(), merge)
                             for merge in merges]
 
-        for processed_merge, merge_comp, merge in tqdm(processed_merges, desc="Adding merges"):
-            if processed_merge not in self.state["model"]["vocab"]:
-                if not self.add_token_suggestion(processed_merge):
-                    continue
-            if merge_comp[0] not in self.state["model"]["vocab"]:
-                if not self.add_token_suggestion(merge_comp[0]):
-                    continue
-            if merge_comp[1] not in self.state["model"]["vocab"]:
-                if not self.add_token_suggestion(merge_comp[1]):
-                    continue
+        vocab = set(self.state["model"]["vocab"].keys())
 
-            self.state["model"]["merges"].append(merge)
+        for processed_merge, merge_comp, merge in tqdm(iterable=processed_merges, desc="Adding merges"):
+            if all(token in vocab for token in merge_comp) and processed_merge in vocab:
+                self.state["model"]["merges"].append(merge)
+
+            elif self.none_permission:
+                continue
+
+            else:
+                self.add_token_suggestion(merge)
+
+        self.adding_permission = False
+        self.none_permission = False
 
     def delete_inappropriate_merges(self, vocab: list[str]):
         """Deletes all merges from tokenizer which contradict the vocab variable
@@ -307,12 +330,13 @@ class TokenizerChanger:
                 self.state["model"]["merges"][i] = tuple(
                     map(str, self.state["model"]["merges"][i].split()))
 
-    def delete_tokens(self, unwanted_tokens: list[str] = [], include_substrings: bool = True):
+    def delete_tokens(self, unwanted_tokens: list[str] = [], include_substrings: bool = True, delete_merges: bool = True):
         """Deletes the unwanted tokens from the tokenizer
 
         Args:
             unwanted_tokens (list[str]): list of tokens to be deleted. If empty self.unwanted_tokens will be deleted. Defaults to [].
             include_substrings (bool, optional): the flag of deletion the occurrences of the tokens in other tokens. Defaults to True.
+            delete_merges (bool, optional): the flag of deletion the merges. Defaults to True.
         """
         self.__is_tokenizer()
 
@@ -328,18 +352,21 @@ class TokenizerChanger:
             except KeyError:
                 raise KeyError(f"Token {token} not found in the vocabulary")
 
-        self.delete_merges()
+        if delete_merges:
+            self.delete_merges()
 
         self.unwanted_tokens = []
 
-    def delete_overlaps(self, vocab: dict):
+    def delete_overlaps(self, vocab: dict, delete_merges: bool = True):
         """Finds and deletes all intersections of the tokenizer's vocabulary and the vocab variable from the tokenizer
 
         Args:
             vocab (dict): the vocabulary
+            delete_merges (bool, optional): the flag of deletion the merges. Defaults to True.
         """
         overlaps = list(set(self.get_overlapping_tokens(vocab)))
-        self.delete_tokens(unwanted_tokens=overlaps, include_substrings=False)
+        self.delete_tokens(unwanted_tokens=overlaps,
+                           include_substrings=False, delete_merges=delete_merges)
 
     def _delete_none_types(self):
         """Deletes all None fields from the tokenizer"""
@@ -357,15 +384,19 @@ class TokenizerChanger:
             except KeyError:
                 raise KeyError(f"Key {k} not found in the model state")
 
-    def delete_k_least_frequent_tokens(self, k: int, exclude: list[str] = []):
+    def delete_k_least_frequent_tokens(self, k: int, exclude: list[str] = [], delete_merges: bool = True, consider_excluded_tokens: bool = False):
         """Deletes k most frequent tokens. The exclude argument stands for tokens that will be ignored during the deletion of least frequent tokens
 
         Args:
             k (int): number of tokens to delete
             exclude (list[str], optional): tokens to be ignored. Defaults to [].
+            delete_merges (bool, optional): the flag of deletion the merges. Defaults to True.
+            consider_excluded_tokens (bool, optional): the flag of considering the excluded tokens in the final number of deletions. Defaults to False.
         """
-        self.find_least_tokens(k, exclude)
-        self.delete_tokens(include_substrings=False)
+        self.find_least_tokens(k_least=k, exclude=exclude,
+                               consider_excluded_tokens=consider_excluded_tokens)
+        self.delete_tokens(include_substrings=False,
+                           delete_merges=delete_merges)
 
     def save_tokenizer(self, path: str = "updated_tokenizer"):
         """Saves the current state of the changed tokenizer. Additionally, it saves tokenizer configs into path folder (./updated_tokenizer by default)
