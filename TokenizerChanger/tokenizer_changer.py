@@ -25,6 +25,9 @@ class TokenizerChanger:
         self.initial_length = len(
             self.state["model"]["vocab"]) if self.state else 0
 
+
+# ======================== Utils ========================
+
     def __is_tokenizer(self):
         """The tokenizer existence checker
 
@@ -51,6 +54,53 @@ class TokenizerChanger:
         self.tokenizer = tokenizer
         self.state = json.loads(tokenizer.backend_tokenizer.__getstate__())
         self.initial_length = len(self.state["model"]["vocab"])
+
+    def _fill_unwanted_merges(self, batch: list[str]):
+        """Fills the unwanted merges process
+
+        Args:
+            batch (list[str]): list of merges
+
+        Returns:
+            list[str]: list of unwanted merges
+        """
+        self.__is_tokenizer()
+        unwanted_merges = []
+        for processed_merge, original_merge in tqdm(batch, desc="Finding unwanted merges"):
+            if any(token in processed_merge for token in self.unwanted_tokens):
+                unwanted_merges.append(original_merge)
+        return unwanted_merges
+
+    def format_merges(self):
+        """Formats the merges to the tuple format"""
+        self.__is_tokenizer()
+
+        for i in tqdm(range(len(self.state["model"]["merges"])), desc="Formatting merges"):
+            if type(self.state["model"]["merges"][i]) != tuple:
+                self.state["model"]["merges"][i] = tuple(
+                    map(str, self.state["model"]["merges"][i].split()))
+
+    def _move_special_tokens(self):
+        """Moves the special tokens to the end of the vocabulary"""
+
+        for i in tqdm(range(len(self.state["added_tokens"])), desc="Moving special tokens"):
+            self.state["added_tokens"][i]["id"] += (
+                len(self.state["model"]["vocab"]) - self.initial_length)
+
+        for i in range(len(self.state["post_processor"]["processors"])):
+            if 'special_tokens' in self.state["post_processor"]["processors"][i].keys():
+                for k in self.state["post_processor"]["processors"][i]["special_tokens"].keys():
+                    for j in tqdm(range(len(self.state["post_processor"]["processors"][i]["special_tokens"][k]['ids'])), desc="Moving special tokens"):
+                        self.state["post_processor"]["processors"][i]["special_tokens"][k]["ids"][j] += (
+                            len(self.state["model"]["vocab"]) - self.initial_length)
+
+    def _process_and_add_tokens(self, merge: str):
+        processed_merge = ''.join(merge).replace(' ', '')
+        split_merge = merge.split()
+        self.add_tokens([processed_merge] + split_merge)
+
+
+# =================== Find operations ===================
 
     def find_least_tokens(self, k_least: int, exclude: list[str] = [], consider_excluded_tokens: bool = False):
         """Finds the k least frequent tokens
@@ -88,21 +138,114 @@ class TokenizerChanger:
             if token in self.state["model"]["vocab"].keys():
                 self.unwanted_tokens.append(token)
 
-    def _fill_unwanted_merges(self, batch: list[str]):
-        """Fills the unwanted merges process
-
-        Args:
-            batch (list[str]): list of merges
+    def find_token_id_gap(self):
+        """Finds the token id of the gap
 
         Returns:
-            list[str]: list of unwanted merges
+            int: the token id of the gap 
         """
         self.__is_tokenizer()
-        unwanted_merges = []
-        for processed_merge, original_merge in tqdm(batch, desc="Finding unwanted merges"):
-            if any(token in processed_merge for token in self.unwanted_tokens):
-                unwanted_merges.append(original_merge)
-        return unwanted_merges
+
+        reversed_vocab_values = list(
+            reversed(self.state["model"]['vocab'].values()))
+        last_gap = 0
+        for i in range(len(self.state["model"]['vocab']) - 1):
+            if reversed_vocab_values[i] - reversed_vocab_values[i + 1] > 1:
+                last_gap = reversed_vocab_values[i + 1]
+
+        return last_gap
+
+
+# ==================== Add operations ===================
+
+    def add_tokens(self, tokens: list[str]):
+        """Adds the tokens to the tokenizer
+
+        Args:
+            tokens (list[str]): list of tokens to be added
+        """
+        self.__is_tokenizer()
+
+        border_id = self.find_token_id_gap()
+        vocab_values_set = set(self.state["model"]['vocab'].values())
+        next_id = border_id + 1
+
+        for token in tqdm(tokens, desc="Adding tokens"):
+            token = token.replace(' ', self.space_sign)
+            if token not in self.state["model"]["vocab"]:
+                while next_id in vocab_values_set:
+                    next_id += 1
+                self.state["model"]["vocab"][token] = next_id
+                vocab_values_set.add(next_id)
+                next_id += 1
+
+    def add_token_suggestion(self, merge: str):
+        """Suggests to add the missing token to the tokenizer
+
+        Args:
+            merge (str): the merge to be suggested to add
+        """
+        self.__is_tokenizer()
+
+        if self.none_permission:
+            return False
+
+        if not self.adding_permission:
+            print(
+                f"Merge \"{merge}\" can not be added. Do you want to add its tokens? ([y]es/[n]o/[a]ll/[none])")
+
+            answer = input().lower()
+
+            while answer not in ['y', 'n', 'a', 'none']:
+                print("Please, enter the correct answer")
+                answer = input().lower()
+
+            if answer == 'y':
+                self._process_and_add_tokens(merge)
+                return True
+            elif answer == 'a':
+                self.adding_permission = True
+                self._process_and_add_tokens(merge)
+                return True
+            elif answer == 'n':
+                return False
+            else:
+                self.none_permission = True
+                return False
+
+        self._process_and_add_tokens(merge)
+        return True
+
+    def add_merges(self, merges: list[str]):
+        """Adds the merges to the tokenizer
+
+        Args:
+            merges (list[str]): list of merges to be added
+        """
+        self.__is_tokenizer()
+
+        pattern = re.compile(r"\s+")
+
+        processed_merges = [(pattern.sub("", merge), merge.split(), merge)
+                            for merge in merges]
+
+        vocab = set(self.state["model"]["vocab"].keys())
+
+        for processed_merge, merge_comp, merge in tqdm(iterable=processed_merges, desc="Adding merges"):
+            if all(token in vocab for token in merge_comp) and processed_merge in vocab:
+                self.state["model"]["merges"].append(merge)
+
+            elif self.none_permission:
+                continue
+
+            else:
+                self.add_token_suggestion(merge)
+
+        self.adding_permission = False
+        self.none_permission = False
+
+
+# ================== Delete operations ==================
 
     def delete_merges(self, unwanted_tokens: list[str] = None):
         """Deletes the unwanted merges
@@ -149,115 +292,6 @@ class TokenizerChanger:
 
         self.unwanted_tokens = []
 
-    def find_token_id_gap(self):
-        """Finds the token id of the gap
-
-        Returns:
-            int: the token id of the gap 
-        """
-        self.__is_tokenizer()
-
-        reversed_vocab_values = list(
-            reversed(self.state["model"]['vocab'].values()))
-        last_gap = 0
-        for i in range(len(self.state["model"]['vocab']) - 1):
-            if reversed_vocab_values[i] - reversed_vocab_values[i + 1] > 1:
-                last_gap = reversed_vocab_values[i + 1]
-
-        return last_gap
-
-    def add_tokens(self, tokens: list[str]):
-        """Adds the tokens to the tokenizer
-
-        Args:
-            tokens (list[str]): list of tokens to be added
-        """
-        self.__is_tokenizer()
-
-        border_id = self.find_token_id_gap()
-        vocab_values_set = set(self.state["model"]['vocab'].values())
-        next_id = border_id + 1
-
-        for token in tqdm(tokens, desc="Adding tokens"):
-            token = token.replace(' ', self.space_sign)
-            if token not in self.state["model"]["vocab"]:
-                while next_id in vocab_values_set:
-                    next_id += 1
-                self.state["model"]["vocab"][token] = next_id
-                vocab_values_set.add(next_id)
-                next_id += 1
-
-    def add_token_suggestion(self, merge: str):
-        """Suggests to add the missing token to the tokenizer
-
-        Args:
-            merge (str): the merge to be suggested to add
-        """
-        self.__is_tokenizer()
-
-        if self.none_permission:
-            return False
-
-        if not self.adding_permission:
-            print(
-                f"Merge \"{merge}\" can not be added. Do you want to add its tokens? ([y]es/[n]o/[a]ll/[none])")
-
-            answer = input().lower()
-
-            while answer not in ['y', 'n', 'a', 'none']:
-                print("Please, enter the correct answer")
-                answer = input().lower()
-
-            if answer == 'y':
-                processed_merge = ''.join(merge).replace(' ', '')
-                split_merge = merge.split()
-                self.add_tokens([processed_merge] + split_merge)
-                return True
-            elif answer == 'a':
-                self.adding_permission = True
-                processed_merge = ''.join(merge).replace(' ', '')
-                split_merge = merge.split()
-                self.add_tokens([processed_merge] + split_merge)
-                return True
-            elif answer == 'n':
-                return False
-            else:
-                self.none_permission = True
-                return False
-
-        processed_merge = ''.join(merge).replace(' ', '')
-        split_merge = merge.split()
-        self.add_tokens([processed_merge] + split_merge)
-        return True
-
-    def add_merges(self, merges: list[str]):
-        """Adds the merges to the tokenizer
-
-        Args:
-            merges (list[str]): list of merges to be added
-        """
-        self.__is_tokenizer()
-
-        pattern = re.compile(r"\s+")
-
-        processed_merges = [(pattern.sub("", merge), merge.split(), merge)
-                            for merge in merges]
-
-        vocab = set(self.state["model"]["vocab"].keys())
-
-        for processed_merge, merge_comp, merge in tqdm(iterable=processed_merges, desc="Adding merges"):
-            if all(token in vocab for token in merge_comp) and processed_merge in vocab:
-                self.state["model"]["merges"].append(merge)
-
-            elif self.none_permission:
-                continue
-
-            else:
-                self.add_token_suggestion(merge)
-
-        self.adding_permission = False
-        self.none_permission = False
-
     def delete_inappropriate_merges(self, vocab: list[str]):
         """Deletes all merges from tokenizer which contradict the vocab variable
 
@@ -277,58 +311,6 @@ class TokenizerChanger:
 
         self.state["model"]["merges"] = [merge for merge in tqdm(
             self.state["model"]["merges"], desc="Deleting unwanted merges") if merge not in unwanted_merges_set]
-
-    def get_overlapping_tokens(self, vocab: dict):
-        """Returns the intersection between the tokenizer's vocabulary and the vocab variable
-
-        Args:
-            vocab (dict): the vocabulary
-
-        Returns:
-            list[str]: the list of overlapping tokens
-        """
-        self.__is_tokenizer()
-
-        overlapping_tokens = []
-        for token in tqdm(vocab.keys(), desc="Finding overlapping tokens"):
-            if token in self.state["model"]["vocab"].keys():
-                overlapping_tokens.append(token)
-
-        return overlapping_tokens
-
-    def get_overlapping_merges(self, merges: list):
-        """Returns the intersection between the tokenizer's merges and the merges variable
-
-        Args:
-            merges (list): the merges
-
-        Returns:
-            list: the list of overlapping merges
-        """
-        self.__is_tokenizer()
-
-        overlapping_merges = []
-
-        processed_merges_new_tokenizer = [(''.join(merge).replace(' ', ''), merge)
-                                          for merge in self.state["model"]["merges"]]
-
-        processed_merges_old_tokenizer = [(''.join(merge).replace(' ', ''), merge)
-                                          for merge in merges]
-
-        for merge in tqdm(processed_merges_new_tokenizer, desc="Finding overlapping merges"):
-            if any(merge in processed_merge for processed_merge in processed_merges_old_tokenizer):
-                overlapping_merges.append(merge)
-
-        return overlapping_merges
-
-    def format_merges(self):
-        """Formats the merges to the tuple format"""
-        self.__is_tokenizer()
-
-        for i in tqdm(range(len(self.state["model"]["merges"])), desc="Formatting merges"):
-            if type(self.state["model"]["merges"][i]) != tuple:
-                self.state["model"]["merges"][i] = tuple(
-                    map(str, self.state["model"]["merges"][i].split()))
 
     def delete_tokens(self, unwanted_tokens: list[str] = [], include_substrings: bool = True, delete_merges: bool = True):
         """Deletes the unwanted tokens from the tokenizer
@@ -398,6 +380,55 @@ class TokenizerChanger:
         self.delete_tokens(include_substrings=False,
                            delete_merges=delete_merges)
 
+
+# ==================== Get operations ===================
+
+    def get_overlapping_tokens(self, vocab: dict):
+        """Returns the intersection between the tokenizer's vocabulary and the vocab variable
+
+        Args:
+            vocab (dict): the vocabulary
+
+        Returns:
+            list[str]: the list of overlapping tokens
+        """
+        self.__is_tokenizer()
+
+        overlapping_tokens = []
+        for token in tqdm(vocab.keys(), desc="Finding overlapping tokens"):
+            if token in self.state["model"]["vocab"].keys():
+                overlapping_tokens.append(token)
+
+        return overlapping_tokens
+
+    def get_overlapping_merges(self, merges: list):
+        """Returns the intersection between the tokenizer's merges and the merges variable
+
+        Args:
+            merges (list): the merges
+
+        Returns:
+            list: the list of overlapping merges
+        """
+        self.__is_tokenizer()
+
+        overlapping_merges = []
+
+        processed_merges_new_tokenizer = [(''.join(merge).replace(' ', ''), merge)
+                                          for merge in self.state["model"]["merges"]]
+
+        processed_merges_old_tokenizer = [(''.join(merge).replace(' ', ''), merge)
+                                          for merge in merges]
+
+        for merge in tqdm(processed_merges_new_tokenizer, desc="Finding overlapping merges"):
+            if any(merge in processed_merge for processed_merge in processed_merges_old_tokenizer):
+                overlapping_merges.append(merge)
+
+        return overlapping_merges
+
+
+# ================== Saving operations ==================
+
     def save_tokenizer(self, path: str = "updated_tokenizer"):
         """Saves the current state of the changed tokenizer. Additionally, it saves tokenizer configs into path folder (./updated_tokenizer by default)
 
@@ -408,20 +439,6 @@ class TokenizerChanger:
         self.updated_tokenizer()
 
         self.tokenizer.save_pretrained(path)
-
-    def _move_special_tokens(self):
-        """Moves the special tokens to the end of the vocabulary"""
-
-        for i in tqdm(range(len(self.state["added_tokens"])), desc="Moving special tokens"):
-            self.state["added_tokens"][i]["id"] += (
-                len(self.state["model"]["vocab"]) - self.initial_length)
-
-        for i in range(len(self.state["post_processor"]["processors"])):
-            if 'special_tokens' in self.state["post_processor"]["processors"][i].keys():
-                for k in self.state["post_processor"]["processors"][i]["special_tokens"].keys():
-                    for j in tqdm(range(len(self.state["post_processor"]["processors"][i]["special_tokens"][k]['ids'])), desc="Moving special tokens"):
-                        self.state["post_processor"]["processors"][i]["special_tokens"][k]["ids"][j] += (
-                            len(self.state["model"]["vocab"]) - self.initial_length)
 
     def updated_tokenizer(self):
         """Returns the updated tokenizer

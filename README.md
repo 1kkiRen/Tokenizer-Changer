@@ -77,7 +77,7 @@ Adds the tokens from the list. The indexes will be filled automatically.
 changer.add_merges(list_of_merges)
 ```
 
-Adds the merges from the list.
+Adds the merges from the list. If there are no necessary tokens for this merge, their addition will be suggested.
 
 ## "Get" functions
 
