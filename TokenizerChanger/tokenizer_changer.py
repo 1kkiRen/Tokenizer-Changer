@@ -1,4 +1,5 @@
 import re
+import copy
 import json
 from tqdm import tqdm
 from tokenizers import Tokenizer
@@ -18,6 +19,7 @@ class TokenizerChanger:
         self.unwanted_tokens = []
         self.none_types = []
         self.adding_permission = False
+        self.original_tokenizer = copy.deepcopy(tokenizer)
         self.none_permission = False
         self.space_sign = space_sign
         self.state = json.loads(
@@ -27,6 +29,7 @@ class TokenizerChanger:
 
 
 # ======================== Utils ========================
+
 
     def __is_tokenizer(self):
         """The tokenizer existence checker
@@ -102,6 +105,7 @@ class TokenizerChanger:
 
 # =================== Find operations ===================
 
+
     def find_least_tokens(self, k_least: int, exclude: list[str] = [], consider_excluded_tokens: bool = False):
         """Finds the k least frequent tokens
 
@@ -157,6 +161,7 @@ class TokenizerChanger:
 
 
 # ==================== Add operations ===================
+
 
     def add_tokens(self, tokens: list[str]):
         """Adds the tokens to the tokenizer
@@ -246,6 +251,7 @@ class TokenizerChanger:
 
 
 # ================== Delete operations ==================
+
 
     def delete_merges(self, unwanted_tokens: list[str] = None):
         """Deletes the unwanted merges
@@ -383,6 +389,7 @@ class TokenizerChanger:
 
 # ==================== Get operations ===================
 
+
     def get_overlapping_tokens(self, vocab: dict):
         """Returns the intersection between the tokenizer's vocabulary and the vocab variable
 
@@ -429,6 +436,7 @@ class TokenizerChanger:
 
 # ================== Saving operations ==================
 
+
     def save_tokenizer(self, path: str = "updated_tokenizer"):
         """Saves the current state of the changed tokenizer. Additionally, it saves tokenizer configs into path folder (./updated_tokenizer by default)
 
@@ -453,8 +461,8 @@ class TokenizerChanger:
 
         backend_tokenizer = Tokenizer.from_str(json.dumps(self.state))
 
-        self.tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=backend_tokenizer)
+        self.tokenizer = self.original_tokenizer.__class__(
+            tokenizer_object=backend_tokenizer, **self.original_tokenizer.init_kwargs)
 
         self.state = json.loads(
             self.tokenizer.backend_tokenizer.__getstate__())
