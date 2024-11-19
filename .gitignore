@@ -3,3 +3,4 @@ setup*
 build/
 dist/
 *.eg*
+*test*
