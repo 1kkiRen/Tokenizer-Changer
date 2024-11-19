@@ -1,3 +1,4 @@
+from heapq import merge
 import re
 import copy
 import json
@@ -72,6 +73,7 @@ class TokenizerChanger:
         for processed_merge, original_merge in tqdm(batch, desc="Finding unwanted merges"):
             if any(token in processed_merge for token in self.unwanted_tokens):
                 unwanted_merges.append(original_merge)
+
         return unwanted_merges
 
     def format_merges(self):
@@ -261,40 +263,42 @@ class TokenizerChanger:
         """
         self.__is_tokenizer()
 
-        pattern = r"\s+"
-        processed_merges = [(re.sub(pattern, "", merge), merge)
+        processed_merges = [("".join(merge), merge)
                             for merge in self.state["model"]["merges"]]
-
         unwanted_merges_set = set()
 
         self.unwanted_tokens = list(set(unwanted_tokens)) if unwanted_tokens else list(
             set(self.unwanted_tokens))
 
         try:
-            num_chunks = cpu_count()
+            num_chunks = cpu_count() // 2
             chunk_size = len(processed_merges) // num_chunks
             chunks = [processed_merges[i:i + chunk_size]
                       for i in range(0, len(processed_merges), chunk_size)]
-
             with Pool(num_chunks) as pool:
-                unwanted_merges = list(tqdm(pool.imap(
+                unwanted_merges_batches = list(tqdm(pool.map(
                     self._fill_unwanted_merges, chunks), total=len(chunks), desc="Processing merges"))
 
+            unwanted_merges = list(
+                merge for merge_batch in unwanted_merges_batches for merge in merge_batch)
             unwanted_merges_set = set()
             for unwanted_merge in tqdm(unwanted_merges, desc="Filling unwanted merges"):
-                unwanted_merges_set.update(unwanted_merge)
+                unwanted_merges_set.add(tuple(unwanted_merge))
 
             self.state["model"]["merges"] = [merge for merge in tqdm(
-                self.state["model"]["merges"], desc="Deleting unwanted merges") if merge not in unwanted_merges_set]
+                self.state["model"]["merges"], desc="Deleting unwanted merges") if tuple(merge) not in unwanted_merges_set]
+
         except Exception as e:
             if e == ZeroDivisionError:
                 unwanted_merges_set = set()
                 for processed_merge, original_merge in tqdm(processed_merges, desc="Finding unwanted merges"):
                     if any(token in processed_merge for token in self.unwanted_tokens):
-                        unwanted_merges_set.add(original_merge)
+                        unwanted_merges_set.add(tuple(original_merge))
 
                 self.state["model"]["merges"] = [merge for merge in tqdm(
-                    self.state["model"]["merges"], desc="Deleting unwanted merges") if merge not in unwanted_merges_set]
+                    self.state["model"]["merges"], desc="Deleting unwanted merges") if tuple(merge) not in unwanted_merges_set]
+            else:
+                raise e
 
         self.unwanted_tokens = []
 
