@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.abspath('..'))
 project = 'TokenizerChanger'
 copyright = '2024, 1kkiren'
 author = '1kkiren'
-release = '0.4.0'
+release = '1.0.0'
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration

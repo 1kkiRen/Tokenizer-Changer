@@ -1,8 +1,3 @@
-.. TokenizerChanger documentation master file, created by
-   sphinx-quickstart on Sat Dec 28 02:05:35 2024.
-   You can adapt this file completely to your liking, but it should at least
-   contain the root `toctree` directive.
-
 TokenizerChanger documentation
 ==============================
 
@@ -13,11 +8,31 @@ TokenizerChanger documentation
 
    modules
 
+About
+==================
+
+Python script for manipulating the existing tokenizer.
+
+The solution was tested on Llama3-8B tokenizer.
+
+Installation
+==================
+
+.. code-block:: bash
+
+    pip install TokenizerChanger
+
+
+Requirements
+==================
+- Python 3.9+
+- tokenizers>=0.21.0
+- transformers>=4.47.0
+- tqdm>=4.66.4
+
 Indices and tables
 ==================
 
 * :ref:`genindex`
 * :ref:`modindex`
-* :ref:`search`
  
-
