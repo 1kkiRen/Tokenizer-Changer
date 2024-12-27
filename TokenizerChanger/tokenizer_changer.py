@@ -1,5 +1,3 @@
-from heapq import merge
-import re
 import copy
 import json
 from tqdm import tqdm
@@ -30,7 +28,6 @@ class TokenizerChanger:
 
 
 # ======================== Utils ========================
-
 
     def __is_tokenizer(self):
         """The tokenizer existence checker
@@ -107,7 +104,6 @@ class TokenizerChanger:
 
 # =================== Find operations ===================
 
-
     def find_least_tokens(self, k_least: int, exclude: list[str] = [], consider_excluded_tokens: bool = False):
         """Finds the k least frequent tokens
 
@@ -163,7 +159,6 @@ class TokenizerChanger:
 
 
 # ==================== Add operations ===================
-
 
     def add_tokens(self, tokens: list[str]):
         """Adds the tokens to the tokenizer
@@ -231,15 +226,13 @@ class TokenizerChanger:
         """
         self.__is_tokenizer()
 
-        pattern = re.compile(r"\s+")
-
-        processed_merges = [(pattern.sub("", merge), merge.split(), merge)
+        processed_merges = [("".join(merge), merge)
                             for merge in merges]
 
         vocab = set(self.state["model"]["vocab"].keys())
 
-        for processed_merge, merge_comp, merge in tqdm(iterable=processed_merges, desc="Adding merges"):
-            if all(token in vocab for token in merge_comp) and processed_merge in vocab:
+        for processed_merge, merge in tqdm(iterable=processed_merges, desc="Adding merges"):
+            if all(token in vocab for token in merge) and processed_merge in vocab:
                 self.state["model"]["merges"].append(merge)
 
             elif self.none_permission:
@@ -255,11 +248,21 @@ class TokenizerChanger:
 # ================== Delete operations ==================
 
 
-    def delete_merges(self, unwanted_tokens: list[str] = None):
+    def _simple_delete_merges(self, processed_merges: list[str]):
+        unwanted_merges_set = set()
+        for processed_merge, original_merge in tqdm(processed_merges, desc="Finding unwanted merges"):
+            if any(token in processed_merge for token in self.unwanted_tokens):
+                unwanted_merges_set.add(tuple(original_merge))
+
+        self.state["model"]["merges"] = [merge for merge in tqdm(
+            self.state["model"]["merges"], desc="Deleting unwanted merges") if tuple(merge) not in unwanted_merges_set]
+
+    def delete_merges(self, unwanted_tokens: list[str] = None, n_jobs=1):
         """Deletes the unwanted merges
 
         Args:
             unwanted_tokens (list[str], optional): the merges deletion will be processed exactly for this tokens. Defaults to None.
+            n_jobs (int, optional): number of threads while deleting merges. Defaults to 1.
         """
         self.__is_tokenizer()
 
@@ -270,35 +273,40 @@ class TokenizerChanger:
         self.unwanted_tokens = list(set(unwanted_tokens)) if unwanted_tokens else list(
             set(self.unwanted_tokens))
 
-        try:
-            num_chunks = cpu_count() // 2
-            chunk_size = len(processed_merges) // num_chunks
-            chunks = [processed_merges[i:i + chunk_size]
-                      for i in range(0, len(processed_merges), chunk_size)]
-            with Pool(num_chunks) as pool:
-                unwanted_merges_batches = list(tqdm(pool.map(
-                    self._fill_unwanted_merges, chunks), total=len(chunks), desc="Processing merges"))
+        if n_jobs > 1:
+            try:
+                n_jobs = min(n_jobs, cpu_count())
 
-            unwanted_merges = list(
-                merge for merge_batch in unwanted_merges_batches for merge in merge_batch)
-            unwanted_merges_set = set()
-            for unwanted_merge in tqdm(unwanted_merges, desc="Filling unwanted merges"):
-                unwanted_merges_set.add(tuple(unwanted_merge))
+                chunk_size = len(processed_merges) // n_jobs
+                chunks = [processed_merges[i:i + chunk_size]
+                          for i in range(0, len(processed_merges), chunk_size)]
+                with Pool(n_jobs) as pool:
+                    unwanted_merges_batches = list(tqdm(pool.map(
+                        self._fill_unwanted_merges, chunks), total=len(chunks), desc="Processing merges"))
 
-            self.state["model"]["merges"] = [merge for merge in tqdm(
-                self.state["model"]["merges"], desc="Deleting unwanted merges") if tuple(merge) not in unwanted_merges_set]
-
-        except Exception as e:
-            if e == ZeroDivisionError:
+                unwanted_merges = list(
+                    merge for merge_batch in unwanted_merges_batches for merge in merge_batch)
                 unwanted_merges_set = set()
-                for processed_merge, original_merge in tqdm(processed_merges, desc="Finding unwanted merges"):
-                    if any(token in processed_merge for token in self.unwanted_tokens):
-                        unwanted_merges_set.add(tuple(original_merge))
+                for unwanted_merge in tqdm(unwanted_merges, desc="Filling unwanted merges"):
+                    unwanted_merges_set.add(tuple(unwanted_merge))
 
                 self.state["model"]["merges"] = [merge for merge in tqdm(
                     self.state["model"]["merges"], desc="Deleting unwanted merges") if tuple(merge) not in unwanted_merges_set]
-            else:
-                raise e
+            except Exception as e:
+                print("Failed to delete merges with multiprocessing")
+                print(e)
+                print("Trying to delete merges with single thread")
+
+                try:
+                    self._simple_delete_merges(processed_merges)
+                except Exception as e:
+                    print("Failed to delete merges with single thread")
+                    raise e
+
+        elif n_jobs == 1:
+            self._simple_delete_merges(processed_merges)
+        else:
+            raise ValueError("Number of jobs should be greater than 0")
 
         self.unwanted_tokens = []
 
@@ -322,13 +330,14 @@ class TokenizerChanger:
         self.state["model"]["merges"] = [merge for merge in tqdm(
             self.state["model"]["merges"], desc="Deleting unwanted merges") if merge not in unwanted_merges_set]
 
-    def delete_tokens(self, unwanted_tokens: list[str] = [], include_substrings: bool = True, delete_merges: bool = True):
+    def delete_tokens(self, unwanted_tokens: list[str] = [], include_substrings: bool = True, delete_merges: bool = True, n_jobs: int = 1) -> None:
         """Deletes the unwanted tokens from the tokenizer
 
         Args:
             unwanted_tokens (list[str]): list of tokens to be deleted. If empty self.unwanted_tokens will be deleted. Defaults to [].
             include_substrings (bool, optional): the flag of deletion the occurrences of the tokens in other tokens. Defaults to True.
             delete_merges (bool, optional): the flag of deletion the merges. Defaults to True.
+            n_jobs (int, optional): number of threads while deleting merges. Defaults to 1.
         """
         self.__is_tokenizer()
 
@@ -345,7 +354,7 @@ class TokenizerChanger:
                 raise KeyError(f"Token {token} not found in the vocabulary")
 
         if delete_merges:
-            self.delete_merges()
+            self.delete_merges(n_jobs=n_jobs)
 
         self.unwanted_tokens = []
 
@@ -376,7 +385,7 @@ class TokenizerChanger:
             except KeyError:
                 raise KeyError(f"Key {k} not found in the model state")
 
-    def delete_k_least_frequent_tokens(self, k: int, exclude: list[str] = [], delete_merges: bool = True, consider_excluded_tokens: bool = False):
+    def delete_k_least_frequent_tokens(self, k: int, exclude: list[str] = [], delete_merges: bool = True, consider_excluded_tokens: bool = False, n_jobs=1):
         """Deletes k most frequent tokens. The exclude argument stands for tokens that will be ignored during the deletion of least frequent tokens
 
         Args:
@@ -384,15 +393,15 @@ class TokenizerChanger:
             exclude (list[str], optional): tokens to be ignored. Defaults to [].
             delete_merges (bool, optional): the flag of deletion the merges. Defaults to True.
             consider_excluded_tokens (bool, optional): the flag of considering the excluded tokens in the final number of deletions. Defaults to False.
+            n_jobs (int, optional): number of threads while deleting merges. Defaults to 1.
         """
         self.find_least_tokens(k_least=k, exclude=exclude,
                                consider_excluded_tokens=consider_excluded_tokens)
         self.delete_tokens(include_substrings=False,
-                           delete_merges=delete_merges)
+                           delete_merges=delete_merges, n_jobs=n_jobs)
 
 
 # ==================== Get operations ===================
-
 
     def get_overlapping_tokens(self, vocab: dict):
         """Returns the intersection between the tokenizer's vocabulary and the vocab variable
@@ -439,7 +448,6 @@ class TokenizerChanger:
 
 
 # ================== Saving operations ==================
-
 
     def save_tokenizer(self, path: str = "updated_tokenizer"):
         """Saves the current state of the changed tokenizer. Additionally, it saves tokenizer configs into path folder (./updated_tokenizer by default)

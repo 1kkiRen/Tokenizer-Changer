@@ -16,6 +16,15 @@ pip install tokenizerchanger
 
 -----
 
+# Requirements
+
+- Python 3.9+
+- tokenizers>=0.21.0
+- transformers>=4.47.0
+- tqdm>=4.66.4
+
+-----
+
 # Usage
 
 ```python
@@ -39,7 +48,7 @@ If you did not set the space sign with `TokenizerChanger` class declaration, you
 ## Deletion
 
 ```python
-changer.delete_tokens(list_of_unwanted_tokens, include_substrings)
+changer.delete_tokens(self, unwanted_tokens: list[str] = [], include_substrings: bool = True, delete_merges: bool = True, n_jobs: int = 1)
 ```
 
 Deletes the unwanted tokens from the tokenizer. If `include_substrings` is `True`, all token occurrences will be deleted even in other tokens. Defaults to `True`.
