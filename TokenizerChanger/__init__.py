@@ -1,5 +1,5 @@
 """
-TokenizerChanger library v1.0.0
+TokenizerChanger library v1.0.1
 
 The Apache 2.0 License Copyright © Dmitrii Kuzmin
 """
