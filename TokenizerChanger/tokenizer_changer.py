@@ -116,15 +116,15 @@ class TokenizerChanger:
 
         self.unwanted_tokens = []
 
-        skipped_counter = 0
+        k_least -= len(exclude) if consider_excluded_tokens else 0
+        if k_least < 0:
+            raise ValueError("k must be greater than 0")
 
         for k, v in tqdm(dict(reversed(list(self.state["model"]["vocab"].items()))).items(), desc="Finding unwanted tokens"):
-            if len(self.unwanted_tokens) >= k_least - skipped_counter:
+            if len(self.unwanted_tokens) >= k_least:
                 break
             if k not in exclude:
                 self.unwanted_tokens.append(k)
-            elif consider_excluded_tokens:
-                skipped_counter += 1
 
     def find_tokens(self, unwanted_tokens: list[str]):
         """Finds the tokens and their occurrences
