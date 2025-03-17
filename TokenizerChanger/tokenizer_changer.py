@@ -96,9 +96,11 @@ class TokenizerChanger:
                         self.state["post_processor"]["processors"][i]["special_tokens"][k]["ids"][j] += (
                             len(self.state["model"]["vocab"]) - self.initial_length)
 
-    def _process_and_add_tokens(self, merge: str):
+    def _process_and_add_tokens(self, merge: list):
+        print(merge)
         processed_merge = ''.join(merge).replace(' ', '')
-        split_merge = merge.split()
+        split_merge = ''.join(merge).split()
+        print([processed_merge] + split_merge)
         self.add_tokens([processed_merge] + split_merge)
 
 
