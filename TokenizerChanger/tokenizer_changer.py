@@ -292,6 +292,8 @@ class TokenizerChanger:
 
                 self.state["model"]["merges"] = [merge for merge in tqdm(
                     self.state["model"]["merges"], desc="Deleting unwanted merges") if tuple(merge) not in unwanted_merges_set]
+                self.state["model"]["vocab"] = {vocab_item: idx for idx, vocab_item in
+                                                enumerate(self.state["model"]["vocab"].keys())}
             except Exception as e:
                 print("Failed to delete merges with multiprocessing")
                 print(e)
