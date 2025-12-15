@@ -1,5 +1,6 @@
 import copy
 import json
+from typing import Any, Optional, Sequence, Union, cast
 from tqdm import tqdm
 from tokenizers import Tokenizer
 from transformers import PreTrainedTokenizerFast
@@ -7,43 +8,85 @@ from multiprocessing import Pool, cpu_count
 
 
 class TokenizerChanger:
-    def __init__(self, tokenizer: PreTrainedTokenizerFast = None, space_sign: str = "Ġ"):
-                """Edit a Hugging Face fast tokenizer by manipulating its underlying tokenizers state.
+    def __init__(self, tokenizer: Optional[PreTrainedTokenizerFast] = None, space_sign: str = "Ġ"):
+        """Edit a Hugging Face fast tokenizer by manipulating its underlying tokenizers state.
 
-                This utility operates on the JSON state of ``tokenizer.backend_tokenizer`` (the
-                `tokenizers` Rust-backed tokenizer) and then reconstructs a new
-                :class:`~transformers.PreTrainedTokenizerFast` instance from the modified state.
+        This utility operates on the JSON state of ``tokenizer.backend_tokenizer`` (the
+        `tokenizers` Rust-backed tokenizer) and then reconstructs a
+        :class:`~transformers.PreTrainedTokenizerFast` instance from the modified state.
 
-                Parameters
-                ----------
-                tokenizer:
-                        The tokenizer to operate on. Must be a *fast* tokenizer
-                        (:class:`~transformers.PreTrainedTokenizerFast`).
-                space_sign:
-                        Replacement marker used when adding tokens that contain spaces. Many BPE
-                        tokenizers represent a leading space with a special character (e.g. ``"Ġ"``).
+        Parameters
+        ----------
+        tokenizer:
+            The tokenizer to operate on. Must be a *fast* tokenizer
+            (:class:`~transformers.PreTrainedTokenizerFast`).
+        space_sign:
+            Replacement marker used when adding tokens that contain spaces. Many BPE
+            tokenizers represent a leading space with a special character (e.g. ``"Ġ"``).
 
-                Notes
-                -----
-                - Methods in this class mutate ``self.state`` (the tokenizer JSON) and may replace
-                    ``self.tokenizer`` when calling :meth:`updated_tokenizer`.
-                - Some operations (e.g. :meth:`add_token_suggestion`) can prompt the user via
-                    stdin/stdout; this is not suitable for non-interactive environments.
-                """
-        self.tokenizer: PreTrainedTokenizerFast = tokenizer
-        self.unwanted_tokens = []
-        self.none_types = []
+        Notes
+        -----
+        - Methods in this class mutate ``self.state`` (the tokenizer JSON) and may replace
+          ``self.tokenizer`` when calling :meth:`updated_tokenizer`.
+        - Some operations (e.g. :meth:`add_token_suggestion`) can prompt the user via
+          stdin/stdout; this is not suitable for non-interactive environments.
+        """
+        self.tokenizer: Optional[PreTrainedTokenizerFast] = tokenizer
+        self.unwanted_tokens: list[str] = []
+        self.none_types: list[str] = []
         self.adding_permission = False
         self.original_tokenizer = copy.deepcopy(tokenizer)
         self.none_permission = False
         self.space_sign = space_sign
-        self.state = json.loads(
-            tokenizer.backend_tokenizer.__getstate__()) if tokenizer else {}
+        if tokenizer:
+            backend_tokenizer = cast(Any, tokenizer.backend_tokenizer)
+            self.state = json.loads(backend_tokenizer.__getstate__())
+        else:
+            self.state = {}
         self.initial_length = len(
             self.state["model"]["vocab"]) if self.state else 0
 
+    # ---------------- Compatibility aliases / clearer names ----------------
+
+    @property
+    def tokens_to_delete(self) -> list[str]:
+        """Alias for ``unwanted_tokens``."""
+        return self.unwanted_tokens
+
+    @tokens_to_delete.setter
+    def tokens_to_delete(self, value: list[str]) -> None:
+        self.unwanted_tokens = value
+
+    @property
+    def space_marker(self) -> str:
+        """Alias for ``space_sign``."""
+        return self.space_sign
+
+    @space_marker.setter
+    def space_marker(self, value: str) -> None:
+        self.space_sign = value
+
+    @property
+    def none_keys(self) -> list[str]:
+        """Alias for ``none_types``."""
+        return self.none_types
+
+    @none_keys.setter
+    def none_keys(self, value: list[str]) -> None:
+        self.none_types = value
+
+    @property
+    def baseline_tokenizer(self) -> Optional[PreTrainedTokenizerFast]:
+        """Alias for ``original_tokenizer``."""
+        return self.original_tokenizer
+
+    @baseline_tokenizer.setter
+    def baseline_tokenizer(self, value: Optional[PreTrainedTokenizerFast]) -> None:
+        self.original_tokenizer = value
+
 
 # ======================== Utils ========================
+
 
     def __is_tokenizer(self):
         """Validate that a tokenizer is loaded.
@@ -56,6 +99,10 @@ class TokenizerChanger:
         if not self.tokenizer or not self.state:
             raise ValueError("Tokenizer is not loaded")
 
+    def _ensure_tokenizer_loaded(self) -> None:
+        """Clearer alias for :meth:`__is_tokenizer` (internal use)."""
+        self.__is_tokenizer()
+
     def set_space_sign(self, space_sign: str):
         """Set the marker used to represent spaces when adding tokens.
 
@@ -66,6 +113,10 @@ class TokenizerChanger:
         """
         self.space_sign = space_sign
 
+    def set_space_marker(self, space_marker: str) -> None:
+        """Alias for :meth:`set_space_sign`."""
+        self.set_space_sign(space_marker)
+
     def load_tokenizer(self, tokenizer: PreTrainedTokenizerFast):
         """Load a tokenizer and initialize internal JSON state.
 
@@ -75,15 +126,18 @@ class TokenizerChanger:
             The tokenizer to load (must be a fast tokenizer).
         """
         self.tokenizer = tokenizer
-        self.state = json.loads(tokenizer.backend_tokenizer.__getstate__())
+        if self.original_tokenizer is None:
+            self.original_tokenizer = copy.deepcopy(tokenizer)
+        backend_tokenizer = cast(Any, tokenizer.backend_tokenizer)
+        self.state = json.loads(backend_tokenizer.__getstate__())
         self.initial_length = len(self.state["model"]["vocab"])
 
-    def _fill_unwanted_merges(self, batch: list[str]):
+    def _fill_unwanted_merges(self, merge_pairs_batch: Sequence[Any]):
         """Worker helper to collect merges containing unwanted tokens.
 
         Parameters
         ----------
-        batch:
+        merge_pairs_batch:
             A batch of merge entries, where each entry is expected to be
             ``(processed_merge, original_merge)``.
 
@@ -92,9 +146,9 @@ class TokenizerChanger:
         list
             A list of original merges that contain any token from ``self.unwanted_tokens``.
         """
-        self.__is_tokenizer()
+        self._ensure_tokenizer_loaded()
         unwanted_merges = []
-        for processed_merge, original_merge in tqdm(batch, desc="Finding unwanted merges"):
+        for processed_merge, original_merge in tqdm(merge_pairs_batch, desc="Finding unwanted merges"):
             if any(token in processed_merge for token in self.unwanted_tokens):
                 unwanted_merges.append(original_merge)
 
@@ -106,7 +160,7 @@ class TokenizerChanger:
         Some tokenizer JSON dumps store merges as whitespace-separated strings.
         This converts each merge into a tuple (typically length 2).
         """
-        self.__is_tokenizer()
+        self._ensure_tokenizer_loaded()
 
         for i in tqdm(range(len(self.state["model"]["merges"])), desc="Formatting merges"):
             if type(self.state["model"]["merges"][i]) != tuple:
@@ -132,7 +186,7 @@ class TokenizerChanger:
                             if "ids" in value[k]:
                                 for j in tqdm(range(len(value[k]["ids"])), desc="Moving special tokens"):
                                     value[k]["ids"][j] += (
-                                    len(self.state["model"]["vocab"]) - self.initial_length)
+                                        len(self.state["model"]["vocab"]) - self.initial_length)
                     else:
                         process_special_tokens(value)
 
@@ -142,26 +196,33 @@ class TokenizerChanger:
 
         process_special_tokens(self.state.get("post_processor", {}))
 
-    def _process_and_add_tokens(self, merge: list):
+    def _process_and_add_tokens(self, merge_pieces: Union[str, Sequence[str]]):
         """Derive candidate tokens from a merge and add them to the vocab.
 
         Parameters
         ----------
-        merge:
-            The merge represented as a list/sequence of string pieces.
+        merge_pieces:
+            The merge represented either as a whitespace-separated string (e.g. ``"a b"``)
+            or as a sequence of pieces (e.g. ``["a", "b"]``).
 
         Notes
         -----
         This method calls :meth:`add_tokens` and therefore mutates ``self.state``.
         """
-        processed_merge = ''.join(merge).replace(' ', '')
-        split_merge = ''.join(merge).split()
+        if isinstance(merge_pieces, str):
+            pieces = merge_pieces.split()
+        else:
+            pieces = [str(p) for p in merge_pieces]
+
+        processed_merge = ''.join(pieces).replace(' ', '')
+        split_merge = ' '.join(pieces).split()
         self.add_tokens([processed_merge] + split_merge)
 
 
 # =================== Find operations ===================
 
-    def find_least_tokens(self, k_least: int, exclude: list[str] = [], consider_excluded_tokens: bool = False):
+
+    def find_tail_tokens(self, k_least: int, exclude: list[str] = [], consider_excluded_tokens: bool = False):
         """Select *k* tokens from the tail of the vocabulary ordering.
 
         Parameters
@@ -184,7 +245,7 @@ class TokenizerChanger:
         ------------
         Updates ``self.unwanted_tokens``.
         """
-        self.__is_tokenizer()
+        self._ensure_tokenizer_loaded()
 
         self.unwanted_tokens = []
 
@@ -210,7 +271,7 @@ class TokenizerChanger:
         ------------
         Appends found tokens to ``self.unwanted_tokens``.
         """
-        self.__is_tokenizer()
+        self._ensure_tokenizer_loaded()
 
         unwanted_tokens = list(set(unwanted_tokens))
 
@@ -227,7 +288,7 @@ class TokenizerChanger:
             The id at the start of the last detected gap. ``add_tokens`` uses this
             to pick ids that do not collide with existing ones.
         """
-        self.__is_tokenizer()
+        self._ensure_tokenizer_loaded()
 
         reversed_vocab_values = list(
             reversed(self.state["model"]['vocab'].values()))
@@ -240,6 +301,7 @@ class TokenizerChanger:
 
 
 # ==================== Add operations ===================
+
 
     def add_tokens(self, tokens: list[str]):
         """Add new tokens to the tokenizer vocabulary.
@@ -255,7 +317,7 @@ class TokenizerChanger:
         It does not automatically update merges; call :meth:`updated_tokenizer` to rebuild
         a usable :class:`~transformers.PreTrainedTokenizerFast`.
         """
-        self.__is_tokenizer()
+        self._ensure_tokenizer_loaded()
 
         border_id = self.find_token_id_gap()
         vocab_values_set = set(self.state["model"]['vocab'].values())
@@ -270,7 +332,7 @@ class TokenizerChanger:
                 vocab_values_set.add(next_id)
                 next_id += 1
 
-    def add_token_suggestion(self, merge: str):
+    def add_token_suggestion(self, merge: Union[str, Sequence[str]]):
         """Prompt the user to add tokens required by a merge.
 
         Parameters
@@ -288,7 +350,7 @@ class TokenizerChanger:
         This method is interactive: it calls ``input()`` and prints to stdout.
         Avoid using it in non-interactive environments.
         """
-        self.__is_tokenizer()
+        self._ensure_tokenizer_loaded()
 
         if self.none_permission:
             return False
@@ -319,36 +381,41 @@ class TokenizerChanger:
         self._process_and_add_tokens(merge)
         return True
 
-    def add_merges(self, merges: list[str]):
+    def add_merges(self, merges: Sequence[Union[str, Sequence[str]]]):
         """Add merge rules to the tokenizer.
 
         Parameters
         ----------
         merges:
-            Iterable of merges. Each merge should be a sequence (typically length 2)
-            describing pieces that can be merged.
+            Iterable of merges. Each merge may be either a whitespace-separated string
+            (e.g. ``"a b"``) or a sequence of pieces (typically length 2).
 
         Notes
         -----
         If required tokens are missing, this may call :meth:`add_token_suggestion`, which
         can prompt the user.
         """
-        self.__is_tokenizer()
+        self._ensure_tokenizer_loaded()
 
-        processed_merges = [("".join(merge), merge)
-                            for merge in merges]
+        processed_merges: list[tuple[str, list[str]]] = []
+        for merge in merges:
+            if isinstance(merge, str):
+                merge_pieces = merge.split()
+            else:
+                merge_pieces = [str(p) for p in merge]
+            processed_merges.append(("".join(merge_pieces), merge_pieces))
 
         vocab = set(self.state["model"]["vocab"].keys())
 
-        for processed_merge, merge in tqdm(iterable=processed_merges, desc="Adding merges"):
-            if all(token in vocab for token in merge) and processed_merge in vocab:
-                self.state["model"]["merges"].append(merge)
+        for processed_merge, merge_pieces in tqdm(iterable=processed_merges, desc="Adding merges"):
+            if all(token in vocab for token in merge_pieces) and processed_merge in vocab:
+                self.state["model"]["merges"].append(merge_pieces)
 
             elif self.none_permission:
                 continue
 
             else:
-                self.add_token_suggestion(merge)
+                self.add_token_suggestion(merge_pieces)
 
         self.adding_permission = False
         self.none_permission = False
@@ -356,8 +423,7 @@ class TokenizerChanger:
 
 # ================== Delete operations ==================
 
-
-    def _simple_delete_merges(self, processed_merges: list[str]):
+    def _simple_delete_merges(self, processed_merges: Sequence[Sequence[Any]]):
         """Single-process merge deletion helper.
 
         Parameters
@@ -373,7 +439,7 @@ class TokenizerChanger:
         self.state["model"]["merges"] = [merge for merge in tqdm(
             self.state["model"]["merges"], desc="Deleting unwanted merges") if tuple(merge) not in unwanted_merges_set]
 
-    def delete_merges(self, unwanted_tokens: list[str] = None, n_jobs=1):
+    def delete_merges(self, unwanted_tokens: Optional[list[str]] = None, n_jobs=1):
         """Delete merge rules that contain unwanted tokens.
 
         Parameters
@@ -390,7 +456,7 @@ class TokenizerChanger:
         when pickling bound methods). If it fails, the implementation falls back to
         single-process deletion.
         """
-        self.__is_tokenizer()
+        self._ensure_tokenizer_loaded()
 
         processed_merges = [("".join(merge), merge)
                             for merge in self.state["model"]["merges"]]
@@ -447,7 +513,7 @@ class TokenizerChanger:
             A list of allowed tokens. Any merge referencing tokens outside this list
             will be removed.
         """
-        self.__is_tokenizer()
+        self._ensure_tokenizer_loaded()
 
         processed_merges = [(''.join(merge).replace(' ', ''), merge)
                             for merge in self.state["model"]["merges"]]
@@ -482,7 +548,7 @@ class TokenizerChanger:
         KeyError
             If a requested token is not in the vocabulary.
         """
-        self.__is_tokenizer()
+        self._ensure_tokenizer_loaded()
 
         self.unwanted_tokens = list(set(unwanted_tokens)) if unwanted_tokens else list(
             set(self.unwanted_tokens))
@@ -522,7 +588,7 @@ class TokenizerChanger:
         Some tokenizer JSON states may include keys set to ``None``; removing them can
         help compatibility with downstream serialization.
         """
-        self.__is_tokenizer()
+        self._ensure_tokenizer_loaded()
 
         self.none_types = []
 
@@ -536,8 +602,8 @@ class TokenizerChanger:
             except KeyError:
                 raise KeyError(f"Key {k} not found in the model state")
 
-    def delete_k_least_frequent_tokens(self, k: int, exclude: list[str] = [], delete_merges: bool = True, consider_excluded_tokens: bool = False, n_jobs=1):
-        """Delete *k* tokens selected by :meth:`find_least_tokens`.
+    def delete_k_tail_tokens(self, k: int, exclude: list[str] = [], delete_merges: bool = True, consider_excluded_tokens: bool = False, n_jobs=1):
+        """Delete *k* tokens selected by :meth:`find_tail_tokens`.
 
         Parameters
         ----------
@@ -554,16 +620,17 @@ class TokenizerChanger:
 
         Notes
         -----
-        This uses :meth:`find_least_tokens`, which is based on vocab ordering rather than
+        This uses :meth:`find_tail_tokens`, which is based on vocab ordering rather than
         true frequency unless your tokenizer’s vocab is frequency-sorted.
         """
-        self.find_least_tokens(k_least=k, exclude=exclude,
+        self.find_tail_tokens(k_least=k, exclude=exclude,
                                consider_excluded_tokens=consider_excluded_tokens)
         self.delete_tokens(include_substrings=False,
                            delete_merges=delete_merges, n_jobs=n_jobs)
 
 
 # ==================== Get operations ===================
+
 
     def get_overlapping_tokens(self, vocab: dict):
         """Return tokens that exist in both vocabularies.
@@ -578,7 +645,7 @@ class TokenizerChanger:
         list[str]
             Tokens that appear in both ``vocab`` and this tokenizer's vocab.
         """
-        self.__is_tokenizer()
+        self._ensure_tokenizer_loaded()
 
         overlapping_tokens = []
         for token in tqdm(vocab.keys(), desc="Finding overlapping tokens"):
@@ -600,7 +667,7 @@ class TokenizerChanger:
         list
             Merges from this tokenizer that appear to overlap with the provided list.
         """
-        self.__is_tokenizer()
+        self._ensure_tokenizer_loaded()
 
         overlapping_merges = []
 
@@ -619,6 +686,7 @@ class TokenizerChanger:
 
 # ================== Saving operations ==================
 
+
     def save_tokenizer(self, path: str = "updated_tokenizer"):
         """Persist the updated tokenizer to disk.
 
@@ -635,7 +703,7 @@ class TokenizerChanger:
 
         self.updated_tokenizer()
 
-        self.tokenizer.save_pretrained(path)
+        cast(Any, self.tokenizer).save_pretrained(path)
 
     def updated_tokenizer(self):
         """Rebuild and return a tokenizer from the current internal JSON state.
@@ -649,17 +717,18 @@ class TokenizerChanger:
         ------------
         Replaces ``self.tokenizer`` and refreshes ``self.state`` from the rebuilt tokenizer.
         """
-        self.__is_tokenizer()
+        self._ensure_tokenizer_loaded()
 
         if self.initial_length != len(self.state["model"]["vocab"]):
             self._move_special_tokens()
 
         backend_tokenizer = Tokenizer.from_str(json.dumps(self.state))
 
-        self.tokenizer = self.original_tokenizer.__class__(
-            tokenizer_object=backend_tokenizer, **self.original_tokenizer.init_kwargs)
+        base_tokenizer = cast(Any, self.original_tokenizer)
+        self.tokenizer = base_tokenizer.__class__(
+            tokenizer_object=backend_tokenizer, **base_tokenizer.init_kwargs)
 
-        self.state = json.loads(
-            self.tokenizer.backend_tokenizer.__getstate__())
+        backend_tokenizer = cast(Any, self.tokenizer.backend_tokenizer)
+        self.state = json.loads(backend_tokenizer.__getstate__())
 
         return self.tokenizer
