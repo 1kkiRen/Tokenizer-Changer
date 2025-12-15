@@ -1,7 +1,8 @@
-"""
-TokenizerChanger library v1.0.4
+"""TokenizerChanger: utilities for editing Hugging Face fast tokenizers.
 
-The Apache 2.0 License Copyright © Dmitrii Kuzmin
+The public API is exposed via :class:`TokenizerChanger.TokenizerChanger`.
 """
 
-from .tokenizer_changer import *
+from .tokenizer_changer import TokenizerChanger
+
+__all__ = ["TokenizerChanger"]
