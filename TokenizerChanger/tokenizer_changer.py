@@ -124,12 +124,23 @@ class TokenizerChanger:
             self.state["added_tokens"][i]["id"] += (
                 len(self.state["model"]["vocab"]) - self.initial_length)
 
-        for i in range(len(self.state["post_processor"]["processors"])):
-            if 'special_tokens' in self.state["post_processor"]["processors"][i].keys():
-                for k in self.state["post_processor"]["processors"][i]["special_tokens"].keys():
-                    for j in tqdm(range(len(self.state["post_processor"]["processors"][i]["special_tokens"][k]['ids'])), desc="Moving special tokens"):
-                        self.state["post_processor"]["processors"][i]["special_tokens"][k]["ids"][j] += (
-                            len(self.state["model"]["vocab"]) - self.initial_length)
+        def process_special_tokens(obj):
+            if isinstance(obj, dict):
+                for key, value in obj.items():
+                    if key == "special_tokens" and isinstance(value, dict):
+                        for k in value.keys():
+                            if "ids" in value[k]:
+                                for j in tqdm(range(len(value[k]["ids"])), desc="Moving special tokens"):
+                                    value[k]["ids"][j] += (
+                                    len(self.state["model"]["vocab"]) - self.initial_length)
+                    else:
+                        process_special_tokens(value)
+
+            elif isinstance(obj, list):
+                for item in obj:
+                    process_special_tokens(item)
+
+        process_special_tokens(self.state.get("post_processor", {}))
 
     def _process_and_add_tokens(self, merge: list):
         """Derive candidate tokens from a merge and add them to the vocab.
@@ -407,6 +418,8 @@ class TokenizerChanger:
 
                 self.state["model"]["merges"] = [merge for merge in tqdm(
                     self.state["model"]["merges"], desc="Deleting unwanted merges") if tuple(merge) not in unwanted_merges_set]
+                self.state["model"]["vocab"] = {vocab_item: idx for idx, vocab_item in
+                                                enumerate(self.state["model"]["vocab"].keys())}
             except Exception as e:
                 print("Failed to delete merges with multiprocessing")
                 print(e)
@@ -638,7 +651,7 @@ class TokenizerChanger:
         """
         self.__is_tokenizer()
 
-        if self.initial_length < len(self.state["model"]["vocab"]):
+        if self.initial_length != len(self.state["model"]["vocab"]):
             self._move_special_tokens()
 
         backend_tokenizer = Tokenizer.from_str(json.dumps(self.state))
