@@ -1,5 +1,5 @@
 __pycache__/
-setup*
+setup.cfg
 _build/
 dist/
 *.eg*
