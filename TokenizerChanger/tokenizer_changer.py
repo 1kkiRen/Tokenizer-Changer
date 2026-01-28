@@ -232,8 +232,8 @@ class TokenizerChanger:
         exclude:
             Tokens to ignore.
         consider_excluded_tokens:
-            If True, ``k_least`` is reduced by ``len(exclude)`` so that the total number
-            of tokens removed/considered stays closer to the user-requested number.
+            If True, ``k_least`` is decremented for each excluded token encountered
+            during selection.
 
         Notes
         -----
@@ -249,7 +249,6 @@ class TokenizerChanger:
 
         self.unwanted_tokens = []
 
-        k_least -= len(exclude) if consider_excluded_tokens else 0
         if k_least < 0:
             raise ValueError("k must be greater than 0")
 
@@ -258,6 +257,8 @@ class TokenizerChanger:
                 break
             if k not in exclude:
                 self.unwanted_tokens.append(k)
+            elif consider_excluded_tokens:
+                k_least -= 1
 
     def find_tokens(self, unwanted_tokens: list[str]):
         """Add existing tokens from ``unwanted_tokens`` to the internal deletion list.

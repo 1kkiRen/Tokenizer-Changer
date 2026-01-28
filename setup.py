@@ -8,7 +8,7 @@ def readme():
 
 setup(
     name='tokenizerchanger',
-    version='1.1.0',
+    version='1.1.1',
     author='1kkiren',
     author_email='1kkiren@mail.ru',
     description='Library for manipulating the existing tokenizer.',
