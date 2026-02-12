@@ -42,7 +42,7 @@ class TokenizerChanger:
             backend_tokenizer = cast(Any, tokenizer.backend_tokenizer)
             self.state = json.loads(backend_tokenizer.__getstate__())
         else:
-            self.state = {}
+            self.state: dict[Any, Any] = {}
         self.initial_length = len(
             self.state["model"]["vocab"]) if self.state else 0
 
@@ -86,7 +86,6 @@ class TokenizerChanger:
 
 
 # ======================== Utils ========================
-
 
     def __is_tokenizer(self):
         """Validate that a tokenizer is loaded.
@@ -221,7 +220,6 @@ class TokenizerChanger:
 
 # =================== Find operations ===================
 
-
     def find_tail_tokens(self, k_least: int, exclude: list[str] = [], consider_excluded_tokens: bool = False):
         """Select *k* tokens from the tail of the vocabulary ordering.
 
@@ -302,7 +300,6 @@ class TokenizerChanger:
 
 
 # ==================== Add operations ===================
-
 
     def add_tokens(self, tokens: list[str]):
         """Add new tokens to the tokenizer vocabulary.
@@ -424,6 +421,7 @@ class TokenizerChanger:
 
 # ================== Delete operations ==================
 
+
     def _simple_delete_merges(self, processed_merges: Sequence[Sequence[Any]]):
         """Single-process merge deletion helper.
 
@@ -440,7 +438,7 @@ class TokenizerChanger:
         self.state["model"]["merges"] = [merge for merge in tqdm(
             self.state["model"]["merges"], desc="Deleting unwanted merges") if tuple(merge) not in unwanted_merges_set]
 
-    def delete_merges(self, unwanted_tokens: Optional[list[str]] = None, n_jobs=1):
+    def delete_merges(self, unwanted_tokens: Optional[list[str]] = None, unwanted_merges_set: set = set(), n_jobs=1):
         """Delete merge rules that contain unwanted tokens.
 
         Parameters
@@ -461,7 +459,6 @@ class TokenizerChanger:
 
         processed_merges = [("".join(merge), merge)
                             for merge in self.state["model"]["merges"]]
-        unwanted_merges_set = set()
 
         self.unwanted_tokens = list(set(unwanted_tokens)) if unwanted_tokens else list(
             set(self.unwanted_tokens))
@@ -479,7 +476,7 @@ class TokenizerChanger:
 
                 unwanted_merges = list(
                     merge for merge_batch in unwanted_merges_batches for merge in merge_batch)
-                unwanted_merges_set = set()
+
                 for unwanted_merge in tqdm(unwanted_merges, desc="Filling unwanted merges"):
                     unwanted_merges_set.add(tuple(unwanted_merge))
 
@@ -505,28 +502,97 @@ class TokenizerChanger:
 
         self.unwanted_tokens = []
 
-    def delete_inappropriate_merges(self, vocab: list[str]):
-        """Delete merges that reference tokens not present in a provided vocab.
+    def _fill_inappropriate_merges(self, merge_pairs_batch: Sequence[Any], vocab: list[str]):
+        """Worker helper to collect inappropriate merges.
+
+        Parameters
+        ----------
+        merge_pairs_batch:
+            A batch of merge entries, where each entry is expected to be
+            ``(processed_merge, original_merge)``.
+        vocab:
+            A list of allowed tokens.
+
+        Returns
+        -------
+        list
+            A list of original merges that reference tokens not in vocab.
+        """
+        self._ensure_tokenizer_loaded()
+        inappropriate_merges = []
+        for processed_merge, original_merge in tqdm(merge_pairs_batch, desc="Finding inappropriate merges"):
+            if not all(token in vocab for token in [processed_merge, original_merge[0], original_merge[1]]):
+                inappropriate_merges.append(original_merge)
+
+        return inappropriate_merges
+
+    def delete_inappropriate_merges(self, vocab: list[str] = [], n_jobs: int = 1):
+        """Delete merges that reference tokens not present in a provided vocab. If `vocab` in empty, then `self.state["model"]["vocab"]` will be used.
 
         Parameters
         ----------
         vocab:
             A list of allowed tokens. Any merge referencing tokens outside this list
             will be removed.
+        n_jobs:
+            Number of worker processes to use. ``1`` uses a single process.
+
+        Notes
+        -----
+        Multiprocessing can be unreliable on some platforms/environments (especially
+        when pickling bound methods). If it fails, the implementation falls back to
+        single-process deletion.
         """
         self._ensure_tokenizer_loaded()
 
-        processed_merges = [(''.join(merge).replace(' ', ''), merge)
+        processed_merges = [(''.join(merge).replace(' ', ''), tuple(merge))
                             for merge in self.state["model"]["merges"]]
 
         unwanted_merges_set = set()
 
-        for processed_merge, original_merge in tqdm(processed_merges, desc="Finding unwanted merges"):
-            if not all(token in vocab for token in [processed_merge, original_merge[0], original_merge[1]]):
-                unwanted_merges_set.add(original_merge)
+        if n_jobs > 1:
+            try:
+                n_jobs = min(n_jobs, cpu_count())
+
+                chunk_size = len(processed_merges) // n_jobs
+                chunks = [processed_merges[i:i + chunk_size]
+                          for i in range(0, len(processed_merges), chunk_size)]
+
+                with Pool(n_jobs) as pool:
+                    inappropriate_merges_batches = list(tqdm(pool.starmap(
+                        self._fill_inappropriate_merges,
+                        [(chunk, vocab) for chunk in chunks]),
+                        total=len(chunks), desc="Processing merges"))
+
+                inappropriate_merges = list(
+                    merge for merge_batch in inappropriate_merges_batches for merge in merge_batch)
+
+                for inappropriate_merge in tqdm(inappropriate_merges, desc="Collecting inappropriate merges"):
+                    unwanted_merges_set.add(inappropriate_merge)
+
+            except Exception as e:
+                print("Failed to delete inappropriate merges with multiprocessing")
+                print(e)
+                print("Trying to delete inappropriate merges with single thread")
+
+                try:
+                    for processed_merge, original_merge in tqdm(processed_merges, desc="Finding inappropriate merges"):
+                        if not all(token in vocab for token in [processed_merge, original_merge[0], original_merge[1]]):
+                            unwanted_merges_set.add(original_merge)
+                except Exception as e:
+                    print("Failed to delete inappropriate merges with single thread")
+                    raise e
+
+        elif n_jobs == 1:
+            for processed_merge, original_merge in tqdm(processed_merges, desc="Finding inappropriate merges"):
+                if not all(token in vocab for token in [processed_merge, original_merge[0], original_merge[1]]):
+                    unwanted_merges_set.add(original_merge)
+
+        else:
+            raise ValueError("Number of jobs should be greater than 0")
 
         self.state["model"]["merges"] = [merge for merge in tqdm(
-            self.state["model"]["merges"], desc="Deleting unwanted merges") if merge not in unwanted_merges_set]
+            self.state["model"]["merges"], desc="Deleting inappropriate merges") if tuple(merge) not in unwanted_merges_set]
 
     def delete_tokens(self, unwanted_tokens: list[str] = [], include_substrings: bool = True, delete_merges: bool = True, n_jobs: int = 1) -> None:
         """Delete tokens from the vocabulary and optionally delete affected merges.
@@ -625,13 +691,12 @@ class TokenizerChanger:
         true frequency unless your tokenizer’s vocab is frequency-sorted.
         """
         self.find_tail_tokens(k_least=k, exclude=exclude,
-                               consider_excluded_tokens=consider_excluded_tokens)
+                              consider_excluded_tokens=consider_excluded_tokens)
         self.delete_tokens(include_substrings=False,
                            delete_merges=delete_merges, n_jobs=n_jobs)
 
 
 # ==================== Get operations ===================
-
 
     def get_overlapping_tokens(self, vocab: dict):
         """Return tokens that exist in both vocabularies.
@@ -685,8 +750,101 @@ class TokenizerChanger:
         return overlapping_merges
 
 
-# ================== Saving operations ==================
+# ================== Replace operations =================
 
+    def replace_tokens(self, donor_TC: "TokenizerChanger", k: int, ignore_overlaps: bool = False, add_merges: bool = True, n_jobs: int = 1, replaced_idx_file: str | None = "replaced_idx.txt"):
+        """Replace *k* tokens from this tokenizer with tokens from a donor tokenizer.
+
+        Parameters
+        ----------
+        donor_TC:
+            The TokenizerChanger instance to source replacement tokens from.
+        k:
+            Number of tokens to replace.
+        ignore_overlaps:
+            Whether to skip overlapping tokens during replacement.
+        add_merges:
+            Whether to also add merges referencing replaced tokens.
+        n_jobs:
+            Worker process count used by :meth:`delete_merges`.
+        replaced_idx_file:
+            Optional file path to save the indices of replaced tokens.
+
+        Notes
+        -----
+        This method selects tokens to delete using :meth:`find_tail_tokens` and then adds
+        new tokens from the donor tokenizer. If the donor has fewer than *k* tokens, it
+        will add as many as it can.
+        """
+        self._ensure_tokenizer_loaded()
+        donor_TC._ensure_tokenizer_loaded()
+
+        # Get lists of tokens
+        donor_tokens = list(donor_TC.state["model"]["vocab"].keys())
+        target_tokens_list = list(self.state["model"]["vocab"].keys())
+
+        reserved_tokens = [self.state["added_tokens"][i]['content']
+                           for i in range(len(self.state["added_tokens"]))]
+        overlaps = self.get_overlapping_tokens(
+            donor_TC.state["model"]["vocab"])
+
+        # Collect k donor tokens (excluding overlaps and reserved tokens if needed)
+        donor_replacement_tokens = []
+        for token in donor_tokens:
+            if len(donor_replacement_tokens) >= k:
+                break
+            if token in reserved_tokens:
+                continue
+            if ignore_overlaps and token in overlaps:
+                continue
+            donor_replacement_tokens.append(token)
+
+        # Find target indices to replace (from tail, excluding overlaps)
+        target_replacement_indices = []
+        for idx in range(len(target_tokens_list) - 1, -1, -1):
+            if len(target_replacement_indices) >= k:
+                break
+            token = target_tokens_list[idx]
+            if ignore_overlaps and token in overlaps:
+                continue
+            target_replacement_indices.append(idx)
+
+        # Reverse to get indices in ascending order for replacement
+        target_replacement_indices.reverse()
+
+        # Create replacement mapping
+        replacement_map = {}
+        for idx, donor_token in zip(target_replacement_indices, reversed(donor_replacement_tokens)):
+            old_token = target_tokens_list[idx]
+            replacement_map[old_token] = donor_token
+
+        # Reconstruct vocabulary with replacements while preserving order
+        new_vocab = {}
+        replaced_token_idx = []
+        for i, token in enumerate(target_tokens_list):
+            if token in replacement_map:
+                new_token = replacement_map[token]
+                old_id = self.state["model"]["vocab"][token]
+                new_vocab[new_token] = old_id
+                replaced_token_idx.append((i, token, new_token))
+            else:
+                new_vocab[token] = self.state["model"]["vocab"][token]
+
+        self.state["model"]["vocab"] = new_vocab
+
+        # Optionally add merges referencing new tokens
+        if add_merges:
+            self.add_merges(donor_TC.state["model"]["merges"])
+            self.delete_inappropriate_merges(list(new_vocab.keys()), n_jobs=n_jobs)
+
+        # Optionally save replaced indices
+        if replaced_idx_file:
+            with open(replaced_idx_file, 'w') as f:
+                for idx, old_token, new_token in replaced_token_idx:
+                    f.write(f"{idx}: {old_token} -> {new_token}\n")
+
+
+# ================== Saving operations ==================
 
     def save_tokenizer(self, path: str = "updated_tokenizer"):
         """Persist the updated tokenizer to disk.
