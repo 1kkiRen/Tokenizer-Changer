@@ -752,7 +752,7 @@ class TokenizerChanger:
 
 # ================== Replace operations =================
 
-    def replace_tokens(self, donor_TC: "TokenizerChanger", k: int, ignore_overlaps: bool = False, add_merges: bool = True, n_jobs: int = 1, replaced_idx_file: str | None = "replaced_idx.txt"):
+    def replace_tokens(self, donor_TC: "TokenizerChanger", k: int, ignore_overlaps: bool = False, add_merges: bool = True, n_jobs: int = 1, replaced_idx_file: str | None = "replaced_idx.txt", idx_from_txt: str | None = None):
         """Replace *k* tokens from this tokenizer with tokens from a donor tokenizer.
 
         Parameters
@@ -769,6 +769,10 @@ class TokenizerChanger:
             Worker process count used by :meth:`delete_merges`.
         replaced_idx_file:
             Optional file path to save the indices of replaced tokens.
+        idx_from_txt:
+            Optional file path containing token ids (one per line) to replace.
+            When provided, only these specific token ids are targeted for replacement
+            and the number of replacements is ``min(k, len(ids_in_file))``.
 
         Notes
         -----
@@ -788,6 +792,13 @@ class TokenizerChanger:
         overlaps = self.get_overlapping_tokens(
             donor_TC.state["model"]["vocab"])
 
+        # If idx_from_txt is provided, read token ids from the file
+        if idx_from_txt:
+            with open(idx_from_txt, 'r') as f:
+                file_token_ids = [int(line.strip())
+                                  for line in f if line.strip()]
+            k = min(k, len(file_token_ids))
+
         # Collect k donor tokens (excluding overlaps and reserved tokens if needed)
         donor_replacement_tokens = []
         for token in donor_tokens:
@@ -799,15 +810,38 @@ class TokenizerChanger:
                 continue
             donor_replacement_tokens.append(token)
 
-        # Find target indices to replace (from tail, excluding overlaps)
-        target_replacement_indices = []
-        for idx in range(len(target_tokens_list) - 1, -1, -1):
-            if len(target_replacement_indices) >= k:
-                break
-            token = target_tokens_list[idx]
-            if ignore_overlaps and token in overlaps:
-                continue
-            target_replacement_indices.append(idx)
+        # Find target indices to replace
+        if idx_from_txt:
+            # Build id-to-index mapping for the target vocab
+            id_to_idx = {}
+            for idx, token in enumerate(target_tokens_list):
+                token_id = self.state["model"]["vocab"][token]
+                id_to_idx[token_id] = idx
+
+            target_replacement_indices = []
+            for tid in file_token_ids:
+                if len(target_replacement_indices) >= k:
+                    break
+                if tid not in id_to_idx:
+                    continue
+                idx = id_to_idx[tid]
+                token = target_tokens_list[idx]
+                if ignore_overlaps and token in overlaps:
+                    continue
+                target_replacement_indices.append(idx)
+
+            # Sort in ascending order for consistent replacement
+            target_replacement_indices.sort()
+        else:
+            # Default: find target indices to replace (from tail, excluding overlaps)
+            target_replacement_indices = []
+            for idx in range(len(target_tokens_list) - 1, -1, -1):
+                if len(target_replacement_indices) >= k:
+                    break
+                token = target_tokens_list[idx]
+                if ignore_overlaps and token in overlaps:
+                    continue
+                target_replacement_indices.append(idx)
 
         # Reverse to get indices in ascending order for replacement
         target_replacement_indices.reverse()
@@ -835,7 +869,8 @@ class TokenizerChanger:
         # Optionally add merges referencing new tokens
         if add_merges:
             self.add_merges(donor_TC.state["model"]["merges"])
-            self.delete_inappropriate_merges(list(new_vocab.keys()), n_jobs=n_jobs)
+            self.delete_inappropriate_merges(
+                list(new_vocab.keys()), n_jobs=n_jobs)
 
         # Optionally save replaced indices
         if replaced_idx_file:
